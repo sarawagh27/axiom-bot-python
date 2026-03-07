@@ -1,0 +1,35 @@
+# Environment variables — NEVER upload
+.env
+.env.local
+
+# env example is safe to upload — do NOT block it
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+logs/
+*.log
+
+# Data (guild configs)
+data/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python build files
+build/
+dist/
+*.egg-info/
