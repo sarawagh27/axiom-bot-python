@@ -22,5 +22,5 @@ def health():
 
 def keep_alive():
     """Start the Flask server in a background thread."""
-    thread = Thread(target=lambda: app.run(host="0.0.0.0", port=8080), daemon=True)
+    thread = Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True)
     thread.start()
