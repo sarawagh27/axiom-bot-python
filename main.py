@@ -11,6 +11,7 @@ import sys
 
 from config import CONFIG
 from bot.client import AxiomBot
+from keep_alive import keep_alive
 
 
 def setup_logging() -> None:
@@ -48,6 +49,10 @@ async def main() -> None:
     setup_logging()
     log = logging.getLogger("axiom.main")
     log.info("Axiom starting up...")
+    keep_alive()  # Start web server for Render/UptimeRobot
+
+    log.info("Waiting 30s before connecting to Discord...")
+    await asyncio.sleep(30)
 
     async with AxiomBot() as bot:
         await bot.start(CONFIG.token)
