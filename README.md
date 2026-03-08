@@ -3,7 +3,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.14-blue?style=flat-square&logo=python)
 ![discord.py](https://img.shields.io/badge/discord.py-2.3.2-5865F2?style=flat-square&logo=discord)
-![License](https://img.shields.io/badge/license-private-red?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 ---
 
