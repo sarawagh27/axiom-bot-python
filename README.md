@@ -24,6 +24,27 @@
 
 ---
 
+## Architecture
+
+Axiom is designed with a modular architecture to keep commands, services, and core systems separated.
+```
+axiom-bot-python
+│
+├─ bot/        # Discord client & startup logic
+├─ cogs/       # Slash commands and command groups
+├─ core/       # Core systems (sessions, cooldowns, rate limiting)
+├─ services/   # Background tasks and scheduled jobs
+├─ ui/         # Discord button views and UI interactions
+├─ util/       # Helper utilities and shared functions
+├─ data/       # Persistent config and storage
+│
+├─ main.py     # Bot entry point
+├─ config.py   # Environment configuration
+└─ requirements.txt
+```
+
+---
+
 ## Setup
 
 ### 1. Clone the repo
