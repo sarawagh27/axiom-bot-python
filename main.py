@@ -22,7 +22,6 @@ def setup_logging() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Rotating file handler — runtime log
     file_handler = logging.handlers.RotatingFileHandler(
         filename="logs/axiom.log",
         maxBytes=CONFIG.log_max_bytes,
@@ -31,7 +30,6 @@ def setup_logging() -> None:
     )
     file_handler.setFormatter(fmt)
 
-    # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(fmt)
 
@@ -40,7 +38,6 @@ def setup_logging() -> None:
     root.addHandler(file_handler)
     root.addHandler(console_handler)
 
-    # Quieten noisy discord.py internals slightly
     logging.getLogger("discord.gateway").setLevel(logging.WARNING)
     logging.getLogger("discord.http").setLevel(logging.WARNING)
 
@@ -49,13 +46,28 @@ async def main() -> None:
     setup_logging()
     log = logging.getLogger("axiom.main")
     log.info("Axiom starting up...")
-    keep_alive()  # Start web server for Render/UptimeRobot
+    keep_alive()
 
-    log.info("Waiting 30s before connecting to Discord...")
-    await asyncio.sleep(30)
+    retry_delay = 60
+    max_delay = 300
 
-    async with AxiomBot() as bot:
-        await bot.start(CONFIG.token)
+    while True:
+        try:
+            log.info(f"Waiting {retry_delay}s before connecting to Discord...")
+            await asyncio.sleep(retry_delay)
+
+            async with AxiomBot() as bot:
+                await bot.start(CONFIG.token)
+
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                log.warning(f"Rate limited by Discord. Waiting {retry_delay}s before retry...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_delay)
+            else:
+                log.error(f"Bot crashed: {e}. Restarting in 60s...")
+                retry_delay = 60
+                await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
