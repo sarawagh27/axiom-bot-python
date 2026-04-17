@@ -1,6 +1,6 @@
 """
 main.py — Axiom bot entry point.
-Initialises logging, loads config, boots the bot.
+Initialises logging, database, loads config, boots the bot.
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import sys
 from config import CONFIG
 from bot.client import AxiomBot
 from keep_alive import keep_alive
+from core.database import db
 
 
 def setup_logging() -> None:
@@ -46,6 +47,11 @@ async def main() -> None:
     setup_logging()
     log = logging.getLogger("axiom.main")
     log.info("Axiom starting up...")
+
+    # Connect database
+    db.connect()
+    log.info("Database ready.")
+
     keep_alive()
 
     retry_delay = 60
@@ -53,9 +59,6 @@ async def main() -> None:
 
     while True:
         try:
-            log.info(f"Waiting {retry_delay}s before connecting to Discord...")
-            await asyncio.sleep(retry_delay)
-
             async with AxiomBot() as bot:
                 await bot.start(CONFIG.token)
 
@@ -74,4 +77,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        db.close()
