@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from config import CONFIG
 from bot.loader import load_all_cogs
-from bot.error_handler import setup_error_handlers
+# error handler loaded as a cog automatically
 
 log = logging.getLogger("axiom.client")
 
@@ -34,7 +34,6 @@ class AxiomBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Called once by discord.py after login, before on_ready."""
         await load_all_cogs(self)
-        setup_error_handlers(self)
 
         if CONFIG.dev_guild_id:
             guild = discord.Object(id=CONFIG.dev_guild_id)

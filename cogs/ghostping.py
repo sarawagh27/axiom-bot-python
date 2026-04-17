@@ -117,6 +117,10 @@ class GhostPingCog(commands.Cog, name="GhostPing"):
             if i < count - 1:
                 await asyncio.sleep(_PING_DELAY)
 
+        # Record usage stats
+        from core.database import db
+        db.record_usage(interaction.guild_id, interaction.user.id, "ghostping", target.id, success)
+
         # ── Final confirmation to invoker ────────────────────────────
         await interaction.followup.send(
             f"👻 Done! Sent **{success}/{count}** ghost ping(s) to {target.mention}.",

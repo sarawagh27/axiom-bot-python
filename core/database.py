@@ -1,0 +1,213 @@
+"""
+core/database.py — SQLite database manager.
+Handles guild configs, usage stats, and cooldowns persistently.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import sqlite3
+from typing import Optional
+
+from config import CONFIG
+
+log = logging.getLogger("axiom.database")
+
+_DB_PATH = os.path.join("data", "axiom.db")
+
+
+class Database:
+    """Async-safe SQLite wrapper using a single connection with WAL mode."""
+
+    def __init__(self) -> None:
+        self._conn: Optional[sqlite3.Connection] = None
+        self._lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
+
+    def connect(self) -> None:
+        """Open connection and create tables. Call once at startup."""
+        os.makedirs("data", exist_ok=True)
+        self._conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._create_tables()
+        log.info("Database connected: %s", _DB_PATH)
+
+    def _create_tables(self) -> None:
+        c = self._conn
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS guild_configs (
+                guild_id     INTEGER PRIMARY KEY,
+                max_count    INTEGER NOT NULL DEFAULT 50,
+                min_interval REAL    NOT NULL DEFAULT 1.0,
+                max_interval REAL    NOT NULL DEFAULT 60.0,
+                cooldown_sec INTEGER NOT NULL DEFAULT 60,
+                allowed_channels TEXT NOT NULL DEFAULT '[]',
+                pingbomb_enabled INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS usage_stats (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id     INTEGER NOT NULL,
+                user_id      INTEGER NOT NULL,
+                command      TEXT    NOT NULL,
+                target_id    INTEGER,
+                count        INTEGER NOT NULL DEFAULT 1,
+                timestamp    REAL    NOT NULL DEFAULT (unixepoch())
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_stats_guild
+                ON usage_stats (guild_id);
+
+            CREATE INDEX IF NOT EXISTS idx_stats_user
+                ON usage_stats (guild_id, user_id);
+        """)
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Guild Config
+    # ------------------------------------------------------------------
+
+    def get_guild_config(self, guild_id: int) -> dict:
+        row = self._conn.execute(
+            "SELECT * FROM guild_configs WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        if row is None:
+            return self._default_config(guild_id)
+        return {
+            "guild_id": row["guild_id"],
+            "max_count": row["max_count"],
+            "min_interval": row["min_interval"],
+            "max_interval": row["max_interval"],
+            "cooldown_seconds": row["cooldown_sec"],
+            "allowed_channel_ids": json.loads(row["allowed_channels"]),
+            "pingbomb_enabled": bool(row["pingbomb_enabled"]),
+        }
+
+    def save_guild_config(self, cfg: dict) -> None:
+        self._conn.execute("""
+            INSERT INTO guild_configs
+                (guild_id, max_count, min_interval, max_interval,
+                 cooldown_sec, allowed_channels, pingbomb_enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                max_count        = excluded.max_count,
+                min_interval     = excluded.min_interval,
+                max_interval     = excluded.max_interval,
+                cooldown_sec     = excluded.cooldown_sec,
+                allowed_channels = excluded.allowed_channels,
+                pingbomb_enabled = excluded.pingbomb_enabled
+        """, (
+            cfg["guild_id"],
+            cfg["max_count"],
+            cfg["min_interval"],
+            cfg["max_interval"],
+            cfg["cooldown_seconds"],
+            json.dumps(cfg["allowed_channel_ids"]),
+            int(cfg["pingbomb_enabled"]),
+        ))
+        self._conn.commit()
+
+    def reset_guild_config(self, guild_id: int) -> None:
+        self._conn.execute(
+            "DELETE FROM guild_configs WHERE guild_id = ?", (guild_id,)
+        )
+        self._conn.commit()
+
+    def _default_config(self, guild_id: int) -> dict:
+        return {
+            "guild_id": guild_id,
+            "max_count": CONFIG.pingbomb_max_count,
+            "min_interval": CONFIG.pingbomb_min_interval,
+            "max_interval": CONFIG.pingbomb_max_interval,
+            "cooldown_seconds": CONFIG.pingbomb_cooldown_seconds,
+            "allowed_channel_ids": [],
+            "pingbomb_enabled": True,
+        }
+
+    # ------------------------------------------------------------------
+    # Usage Stats
+    # ------------------------------------------------------------------
+
+    def record_usage(
+        self,
+        guild_id: int,
+        user_id: int,
+        command: str,
+        target_id: Optional[int] = None,
+        count: int = 1,
+    ) -> None:
+        self._conn.execute("""
+            INSERT INTO usage_stats (guild_id, user_id, command, target_id, count)
+            VALUES (?, ?, ?, ?, ?)
+        """, (guild_id, user_id, command, target_id, count))
+        self._conn.commit()
+
+    def get_guild_stats(self, guild_id: int) -> dict:
+        """Returns aggregate stats for a guild."""
+        row = self._conn.execute("""
+            SELECT
+                COUNT(*) as total_uses,
+                SUM(count) as total_pings,
+                COUNT(DISTINCT user_id) as unique_users
+            FROM usage_stats
+            WHERE guild_id = ?
+        """, (guild_id,)).fetchone()
+
+        top_users = self._conn.execute("""
+            SELECT user_id, SUM(count) as total
+            FROM usage_stats
+            WHERE guild_id = ?
+            GROUP BY user_id
+            ORDER BY total DESC
+            LIMIT 3
+        """, (guild_id,)).fetchall()
+
+        top_commands = self._conn.execute("""
+            SELECT command, COUNT(*) as uses
+            FROM usage_stats
+            WHERE guild_id = ?
+            GROUP BY command
+            ORDER BY uses DESC
+            LIMIT 5
+        """, (guild_id,)).fetchall()
+
+        return {
+            "total_uses": row["total_uses"] or 0,
+            "total_pings": row["total_pings"] or 0,
+            "unique_users": row["unique_users"] or 0,
+            "top_users": [(r["user_id"], r["total"]) for r in top_users],
+            "top_commands": [(r["command"], r["uses"]) for r in top_commands],
+        }
+
+    def get_user_stats(self, guild_id: int, user_id: int) -> dict:
+        row = self._conn.execute("""
+            SELECT
+                COUNT(*) as total_uses,
+                SUM(count) as total_pings,
+                MAX(timestamp) as last_used
+            FROM usage_stats
+            WHERE guild_id = ? AND user_id = ?
+        """, (guild_id, user_id)).fetchone()
+
+        return {
+            "total_uses": row["total_uses"] or 0,
+            "total_pings": row["total_pings"] or 0,
+            "last_used": row["last_used"],
+        }
+
+    def close(self) -> None:
+        if self._conn:
+            self._conn.close()
+            log.info("Database connection closed.")
+
+
+# Module-level singleton
+db = Database()

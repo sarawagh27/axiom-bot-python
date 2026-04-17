@@ -143,6 +143,10 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
 
         # 10. Launch engine with guild cooldown override
         await self._engine.launch(session, cooldown_override=guild_cfg.cooldown_seconds, anonymous=anonymous)
+
+        # Record usage stats
+        from core.database import db
+        db.record_usage(guild_id, user_id, "pingbomb", target.id, count)
         log.info(
             "/pingbomb invoked: guild=%s invoker=%s target=%s count=%s interval=%s",
             guild_id, user_id, target.id, count, interval,

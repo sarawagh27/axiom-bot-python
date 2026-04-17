@@ -1,7 +1,10 @@
 """
-bot/error_handler.py — Global app_command and interaction error handler.
-Produces user-facing ephemeral error messages and logs server-side details.
+bot/error_handler.py — Global slash command error handler.
+Catches all command errors and sends user-friendly messages.
+Also logs every error with full context for debugging.
 """
+
+from __future__ import annotations
 
 import logging
 import traceback
@@ -12,63 +15,62 @@ from discord.ext import commands
 
 log = logging.getLogger("axiom.error_handler")
 
-# Map known error types to user-friendly messages
-_ERROR_MESSAGES: dict[type[Exception], str] = {
-    app_commands.MissingPermissions: "You don't have permission to use that command.",
-    app_commands.BotMissingPermissions: "I'm missing required permissions to do that.",
-    app_commands.CommandOnCooldown: "That command is on cooldown. Try again later.",
-    app_commands.NoPrivateMessage: "This command can't be used in DMs.",
-}
 
+class ErrorHandler(commands.Cog):
 
-def _build_embed(title: str, description: str, colour: discord.Colour) -> discord.Embed:
-    return discord.Embed(title=title, description=description, colour=colour)
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        bot.tree.on_error = self.on_app_command_error
 
-
-async def _respond(interaction: discord.Interaction, embed: discord.Embed) -> None:
-    """Send ephemeral error embed, handling already-responded interactions."""
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    except discord.HTTPException:
-        pass  # Interaction expired — nothing we can do
-
-
-def setup_error_handlers(bot: commands.Bot) -> None:
-    @bot.tree.error
     async def on_app_command_error(
+        self,
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
+
+        # Unwrap the original error if wrapped
         original = getattr(error, "original", error)
 
-        for err_type, message in _ERROR_MESSAGES.items():
-            if isinstance(original, err_type):
-                embed = _build_embed("⚠️ Command Error", message, discord.Colour.orange())
-                await _respond(interaction, embed)
-                return
-
-        # Cooldown with dynamic time remaining
-        if isinstance(original, app_commands.CommandOnCooldown):
-            msg = f"This command is on cooldown. Retry in **{original.retry_after:.1f}s**."
-            embed = _build_embed("⏳ Cooldown", msg, discord.Colour.orange())
-            await _respond(interaction, embed)
-            return
-
-        # Unknown / unhandled — log full traceback, show generic message
+        # Log full traceback for debugging
         log.error(
-            "Unhandled app command error in '%s' (guild=%s user=%s):\n%s",
+            "Command error in /%s (guild=%s user=%s): %s\n%s",
             interaction.command.name if interaction.command else "unknown",
             interaction.guild_id,
             interaction.user.id,
+            original,
             "".join(traceback.format_exception(type(original), original, original.__traceback__)),
         )
 
-        embed = _build_embed(
-            "❌ Unexpected Error",
-            "Something went wrong. The error has been logged. Please try again.",
-            discord.Colour.red(),
-        )
-        await _respond(interaction, embed)
+        # User-friendly messages based on error type
+        if isinstance(error, app_commands.CommandOnCooldown):
+            remaining = round(error.retry_after)
+            msg = f"⏳ You're on cooldown! Try again in **{remaining}s**."
+
+        elif isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You don't have permission to use this command."
+
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            missing = ", ".join(error.missing_permissions)
+            msg = f"❌ I'm missing permissions: `{missing}`"
+
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            msg = "❌ This command can only be used in a server."
+
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = "❌ You don't meet the requirements for this command."
+
+        else:
+            msg = "❌ Something went wrong. Please try again."
+
+        # Send response — handle both responded and unresponded interactions
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(ErrorHandler(bot))

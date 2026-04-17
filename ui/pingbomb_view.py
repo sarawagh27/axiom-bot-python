@@ -65,7 +65,7 @@ class PingbombView(discord.ui.View):
             await interaction.message.edit(view=self)
             return
 
-        if session.state != SessionState.RUNNING:
+        if session.state not in (SessionState.RUNNING, SessionState.PENDING):
             await interaction.response.send_message(
                 f"Session is not running (state: {session.state.name}).", ephemeral=True
             )
@@ -157,13 +157,16 @@ class PingbombView(discord.ui.View):
                 item.disabled = True
 
     def _update_button_states(self) -> None:
-        state = self._session.state
+        # Always use the live session state from session_manager
+        live = session_manager.get(self._session.guild_id, self._session.user_id)
+        state = live.state if live else self._session.state
         for item in self.children:
             if not isinstance(item, discord.ui.Button):
                 continue
             cid = item.custom_id
             if cid == "pb_pause":
-                item.disabled = state != SessionState.RUNNING
+                # Enable pause when RUNNING or PENDING (engine may not have started yet)
+                item.disabled = state not in (SessionState.RUNNING, SessionState.PENDING)
             elif cid == "pb_resume":
                 item.disabled = state != SessionState.PAUSED
             elif cid == "pb_stop":
