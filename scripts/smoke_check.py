@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -15,12 +16,15 @@ import urllib.request
 
 EXPECTED = {"status": "ok", "bot": "Axiom"}
 ROUTES = ("/ping", "/health", "/healthz")
+REQUEST_TIMEOUT_SECONDS = 60
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 10
 
 
-def check_route(base_url: str, route: str) -> tuple[bool, str]:
+def check_route_once(base_url: str, route: str) -> tuple[bool, str]:
     url = f"{base_url.rstrip('/')}{route}"
     try:
-        with urllib.request.urlopen(url, timeout=15) as response:
+        with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             status = response.getcode()
             body = response.read().decode("utf-8")
     except urllib.error.URLError as exc:
@@ -38,6 +42,24 @@ def check_route(base_url: str, route: str) -> tuple[bool, str]:
         return False, f"{route}: expected {EXPECTED}, got {payload}"
 
     return True, f"{route}: OK"
+
+
+def check_route(base_url: str, route: str) -> tuple[bool, str]:
+    last_message = f"{route}: unknown error"
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        ok, message = check_route_once(base_url, route)
+        if ok:
+            return True, f"{route}: OK (attempt {attempt}/{MAX_ATTEMPTS})"
+
+        last_message = message
+        if attempt < MAX_ATTEMPTS:
+            print(
+                f"{route}: attempt {attempt}/{MAX_ATTEMPTS} failed, "
+                f"retrying in {RETRY_BACKOFF_SECONDS}s..."
+            )
+            time.sleep(RETRY_BACKOFF_SECONDS)
+
+    return False, f"{route}: FAILED after {MAX_ATTEMPTS} attempts. Last error: {last_message}"
 
 
 def main() -> int:
