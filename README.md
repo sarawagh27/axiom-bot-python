@@ -150,7 +150,7 @@ Axiom is designed to run 24/7 on [Render](https://render.com) (free tier) with [
 |---|---|
 | Build Command | `pip install -r requirements.txt` |
 | Start Command | `python main.py` |
-| Health Endpoint | `https://your-app.onrender.com/health` |
+| Health Endpoint | `https://your-app.onrender.com/ping` *(also supports `/health` and `/healthz`)* |
 
 Set `DISCORD_TOKEN` and `DEV_GUILD_ID` as environment variables in the Render dashboard — never commit your token to Git.
 

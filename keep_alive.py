@@ -5,7 +5,7 @@ never spins down on the free tier.
 """
 
 from threading import Thread
-from flask import Flask
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
@@ -17,7 +17,14 @@ def home():
 
 @app.route("/health")
 def health():
-    return {"status": "ok", "bot": "Axiom"}, 200
+    return jsonify(status="ok", bot="Axiom"), 200
+
+
+@app.route("/healthz")
+@app.route("/ping")
+def ping():
+    # Keep legacy and platform-specific health URLs stable.
+    return health()
 
 
 import os
