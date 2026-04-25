@@ -53,6 +53,7 @@ async def main() -> None:
     log.info("Database ready.")
 
     keep_alive()
+    log.info("Keep-alive server started on /ping, /health, and /healthz.")
 
     retry_delay = 60
     max_delay = 300

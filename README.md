@@ -154,6 +154,22 @@ Axiom is designed to run 24/7 on [Render](https://render.com) (free tier) with [
 
 Set `DISCORD_TOKEN` and `DEV_GUILD_ID` as environment variables in the Render dashboard — never commit your token to Git.
 
+### Post-deploy smoke check
+
+After each deploy, run a quick endpoint contract check:
+
+```bash
+python scripts/smoke_check.py https://your-app.onrender.com
+```
+
+This validates `/ping`, `/health`, and `/healthz` all return HTTP 200 with:
+
+```json
+{"status":"ok","bot":"Axiom"}
+```
+
+For automation in GitHub Actions, add repository secret `RENDER_BASE_URL` with your Render URL (example: `https://your-app.onrender.com`).
+
 ---
 
 ## Required Bot Permissions

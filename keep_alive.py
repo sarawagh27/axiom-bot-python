@@ -5,7 +5,7 @@ never spins down on the free tier.
 """
 
 from threading import Thread
-from flask import Flask
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
@@ -17,12 +17,17 @@ def home():
 
 @app.route("/ping")
 def ping():
-    return "pong", 200
+    return jsonify({"status": "ok", "bot": "Axiom"}), 200
 
 
 @app.route("/health")
 def health():
-    return "healthy", 200
+    return jsonify({"status": "ok", "bot": "Axiom"}), 200
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"status": "ok", "bot": "Axiom"}), 200
 
 def keep_alive():
     """Start the Flask server in a background thread."""
