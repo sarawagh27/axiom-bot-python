@@ -5,32 +5,26 @@ never spins down on the free tier.
 """
 
 from threading import Thread
-from flask import Flask, jsonify
+from flask import Flask
 
 app = Flask(__name__)
 
 
 @app.route("/")
 def home():
-    return "Axiom is alive! 💣", 200
+    return "Bot is alive", 200
+
+
+@app.route("/ping")
+def ping():
+    return "pong", 200
 
 
 @app.route("/health")
 def health():
-    return jsonify(status="ok", bot="Axiom"), 200
-
-
-@app.route("/healthz")
-@app.route("/ping")
-def ping():
-    # Keep legacy and platform-specific health URLs stable.
-    return health()
-
-
-import os
+    return "healthy", 200
 
 def keep_alive():
     """Start the Flask server in a background thread."""
-    port = int(os.environ.get("PORT", 10000))
-    thread = Thread(target=lambda: app.run(host="0.0.0.0", port=port), daemon=True)
+    thread = Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True)
     thread.start()
