@@ -112,6 +112,16 @@ axiom-bot-python/
 | Admin tools | `/admin_sessions`, `/admin_stop_session`, `/admin_stop_all`, `/admin_clear_cooldown`, `/admin_clear_all_cooldowns` |
 | Utility | `/ping`, `/status`, `/info`, `/help` |
 
+## Bot Permissions
+
+| Permission | Why Axiom needs it |
+|---|---|
+| Send Messages | Sends command responses, ping messages, and completion embeds |
+| Manage Messages | Deletes ghost ping messages after notifications fire |
+| Embed Links | Displays polished status, settings, and analytics embeds |
+| Use Slash Commands | Registers and handles Discord application commands |
+| Read Message History | Supports message cleanup and command context |
+
 ## Setup
 
 ### Prerequisites
@@ -173,36 +183,15 @@ Expected response:
 {"status": "ok", "bot": "Axiom"}
 ```
 
-## Slash Command Cleanup
+## Quality Checks
 
-If Discord shows every slash command twice, the bot probably has both global commands and development-guild commands registered.
-
-For development servers, keep `DEV_GUILD_ID` set and clear stale global commands once:
+Run the local test suite before pushing changes:
 
 ```bash
-python scripts/clear_global_commands.py
+python -m unittest discover -s tests
 ```
 
-You can also set this temporarily:
-
-```env
-CLEAR_GLOBAL_COMMANDS_ON_DEV_SYNC=true
-```
-
-After the duplicates disappear, set it back to `false`. Discord may cache slash command changes briefly, so restarting Discord can help the command picker refresh.
-
-## Demo Assets
-
-Axiom's README expects the following visual assets under `docs/assets/`:
-
-| Asset | Suggested file | Where to show it |
-|---|---|---|
-| `/pingbomb` control panel | `docs/assets/pingbomb-session.png` | Directly under Key Features |
-| `/stats` analytics embed | `docs/assets/stats-dashboard.png` | Under Standout Factor |
-| `/settings` configuration view | `docs/assets/server-settings.png` | Under Architecture or Command Overview |
-| Short demo GIF | `docs/assets/axiom-demo.gif` | Near the top, after Overview |
-
-For maximum impact, use one clean demo GIF near the top and keep the three screenshots in the Visual Proof section. Recruiters should understand the bot's value before they read the setup instructions.
+The same test suite runs in GitHub Actions on every push and pull request.
 
 ## Why This Project Is Different
 
@@ -220,9 +209,19 @@ Most Discord bot projects stop at command handlers. Axiom goes further:
 - Add role-based command permissions per guild.
 - Export `/stats` data as CSV for server admins.
 - Add structured JSON logging for easier production monitoring.
-- Add GitHub Actions for linting, tests, and smoke checks.
+- Add linting and type-checking gates to CI.
 
-## Development Notes
+## Troubleshooting
+
+If Discord shows duplicate slash commands during development, clear stale global commands once while using `DEV_GUILD_ID`:
+
+```bash
+python scripts/clear_global_commands.py
+```
+
+Discord can cache slash command changes briefly, so restarting Discord may be needed after cleanup.
+
+### Commit Style
 
 Recommended commit style:
 
