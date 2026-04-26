@@ -37,6 +37,15 @@ class AxiomBot(commands.Bot):
 
         if CONFIG.dev_guild_id:
             guild = discord.Object(id=CONFIG.dev_guild_id)
+
+            if CONFIG.clear_global_commands_on_dev_sync:
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync()
+                log.warning(
+                    "Cleared global slash commands before dev guild sync. "
+                    "Set CLEAR_GLOBAL_COMMANDS_ON_DEV_SYNC=false after duplicates disappear."
+                )
+
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Slash commands synced to dev guild %s", CONFIG.dev_guild_id)

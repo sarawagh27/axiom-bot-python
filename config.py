@@ -24,10 +24,18 @@ def _optional(key: str, default: str) -> str:
     return os.getenv(key, default)
 
 
+def _optional_bool(key: str, default: bool = False) -> bool:
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class BotConfig:
     token: str
     dev_guild_id: int | None
+    clear_global_commands_on_dev_sync: bool
 
     # Pingbomb
     pingbomb_max_count: int
@@ -52,6 +60,10 @@ def load_config() -> BotConfig:
     return BotConfig(
         token=_require("DISCORD_TOKEN"),
         dev_guild_id=dev_guild_id,
+        clear_global_commands_on_dev_sync=_optional_bool(
+            "CLEAR_GLOBAL_COMMANDS_ON_DEV_SYNC",
+            False,
+        ),
         pingbomb_max_count=int(_optional("PINGBOMB_MAX_COUNT", "50")),
         pingbomb_min_interval=float(_optional("PINGBOMB_MIN_INTERVAL", "1.0")),
         pingbomb_max_interval=float(_optional("PINGBOMB_MAX_INTERVAL", "60.0")),

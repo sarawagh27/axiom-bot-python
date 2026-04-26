@@ -136,6 +136,7 @@ python main.py
 |---|---:|---:|---|
 | `DISCORD_TOKEN` | Yes | - | Discord bot token |
 | `DEV_GUILD_ID` | No | empty | Optional guild ID for instant slash command sync during development |
+| `CLEAR_GLOBAL_COMMANDS_ON_DEV_SYNC` | No | `false` | Optional one-time cleanup for stale global commands when using `DEV_GUILD_ID` |
 | `PINGBOMB_MAX_COUNT` | No | `50` | Default maximum pings per session |
 | `PINGBOMB_MIN_INTERVAL` | No | `1.0` | Minimum seconds between pings |
 | `PINGBOMB_MAX_INTERVAL` | No | `60.0` | Maximum seconds between pings |
@@ -167,6 +168,24 @@ Expected response:
 ```json
 {"status": "ok", "bot": "Axiom"}
 ```
+
+## Slash Command Cleanup
+
+If Discord shows every slash command twice, the bot probably has both global commands and development-guild commands registered.
+
+For development servers, keep `DEV_GUILD_ID` set and clear stale global commands once:
+
+```bash
+python scripts/clear_global_commands.py
+```
+
+You can also set this temporarily:
+
+```env
+CLEAR_GLOBAL_COMMANDS_ON_DEV_SYNC=true
+```
+
+After the duplicates disappear, set it back to `false`. Discord may cache slash command changes briefly, so restarting Discord can help the command picker refresh.
 
 ## Demo Assets
 
