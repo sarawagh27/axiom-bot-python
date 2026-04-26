@@ -44,7 +44,7 @@ def _settings_embed(cfg: GuildConfig, guild: discord.Guild) -> discord.Embed:
         channels = "All channels *(no restriction)*"
 
     embed.add_field(name="📢 Allowed Channels", value=channels, inline=False)
-    embed.set_footer(text=f"Guild ID: {cfg.guild_id} • Use /settings_reset to restore defaults")
+    embed.set_footer(text="Use /settings_reset to restore defaults")
     return embed
 
 
