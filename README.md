@@ -33,6 +33,18 @@ Instead of treating Discord commands as one-off scripts, Axiom models ping activ
 | Health endpoints | `/ping`, `/health`, and `/healthz` endpoints for hosting checks | Ready for Render, uptime checks, and basic monitoring |
 | Audit logging | Runtime and session events are written to logs | Improves debugging and operational confidence |
 
+## Visual Proof
+
+The screenshots below show Axiom running inside Discord with real slash-command responses, interactive controls, analytics, and server configuration.
+
+| Pingbomb Session | Usage Analytics |
+|---|---|
+| <img src="docs/assets/pingbomb-session.png" alt="Axiom pingbomb session with pause, resume, and stop controls" width="420"> | <img src="docs/assets/stats-dashboard.png" alt="Axiom stats dashboard showing command usage and top pingers" width="420"> |
+
+| Server Settings |
+|---|
+| <img src="docs/assets/server-settings.png" alt="Axiom server settings showing pingbomb limits and allowed channels" width="850"> |
+
 ## Standout Factor: Smart Rate Limiting
 
 Axiom includes a production-minded rate limiting layer that protects both individual users and the bot as a whole.
@@ -156,9 +168,9 @@ Expected response:
 {"status": "ok", "bot": "Axiom"}
 ```
 
-## Screenshots and Demo
+## Demo Assets
 
-Recommended assets to add under `docs/assets/`:
+Axiom's README expects the following visual assets under `docs/assets/`:
 
 | Asset | Suggested file | Where to show it |
 |---|---|---|
@@ -167,7 +179,7 @@ Recommended assets to add under `docs/assets/`:
 | `/settings` configuration view | `docs/assets/server-settings.png` | Under Architecture or Command Overview |
 | Short demo GIF | `docs/assets/axiom-demo.gif` | Near the top, after Overview |
 
-For maximum impact, use one clean demo GIF near the top and three smaller screenshots lower down. Recruiters should understand the bot's value before they read the setup instructions.
+For maximum impact, use one clean demo GIF near the top and keep the three screenshots in the Visual Proof section. Recruiters should understand the bot's value before they read the setup instructions.
 
 ## Why This Project Is Different
 
