@@ -6,6 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.3.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
+[![Tests](https://img.shields.io/github/actions/workflow/status/sarawagh27/axiom-bot-python/tests.yml?branch=master&style=for-the-badge&label=Tests)](https://github.com/sarawagh27/axiom-bot-python/actions/workflows/tests.yml)
 [![Status](https://img.shields.io/badge/Status-Portfolio%20Ready-22C55E?style=for-the-badge)](#)
 [![License](https://img.shields.io/badge/License-MIT-111827?style=for-the-badge)](LICENSE)
 
