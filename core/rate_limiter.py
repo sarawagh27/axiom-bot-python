@@ -44,18 +44,17 @@ class TokenBucket:
 
     async def acquire(self, tokens: int = 1) -> None:
         """Block until `tokens` tokens are available, then consume them."""
-        async with self._lock:
-            while True:
+        while True:
+            async with self._lock:
                 self._refill()
                 if self._tokens >= tokens:
                     self._tokens -= tokens
                     return
-                # Calculate wait time and sleep outside the lock
-                deficit = tokens - self._tokens
-                wait = deficit / self._refill_rate
-                log.debug("Rate limiter throttling — waiting %.3fs", wait)
-            # Unreachable but satisfies linters
-            await asyncio.sleep(wait)  # type: ignore[possibly-undefined]
+
+                wait = self.retry_after(tokens)
+                log.debug("Rate limiter throttling - waiting %.3fs", wait)
+
+            await asyncio.sleep(wait)
 
     def try_acquire(self, tokens: int = 1) -> bool:
         """Non-blocking attempt. Returns True if acquired, False if throttled."""
@@ -64,6 +63,14 @@ class TokenBucket:
             self._tokens -= tokens
             return True
         return False
+
+    def retry_after(self, tokens: int = 1) -> float:
+        """Return the estimated wait time until `tokens` can be acquired."""
+        self._refill()
+        if self._tokens >= tokens:
+            return 0.0
+        deficit = tokens - self._tokens
+        return deficit / self._refill_rate
 
     @property
     def available(self) -> float:
@@ -110,6 +117,12 @@ class RateLimiter:
             bucket._tokens += 1
             return False
         return True
+
+    def retry_after(self, guild_id: int, user_id: int) -> float:
+        """Return the longest wait required across user and global buckets."""
+        user_wait = self._get_bucket(guild_id, user_id).retry_after()
+        global_wait = self._global.retry_after()
+        return max(user_wait, global_wait)
 
     def cleanup(self, guild_id: int, user_id: int) -> None:
         """Remove a user's bucket after their session ends."""

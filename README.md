@@ -1,15 +1,13 @@
 <div align="center">
 
-# ⚡ Axiom
+# Axiom
 
-**A powerful, modular Discord utility bot built with Python and discord.py.**
+### A controlled Discord utility bot for ping sessions, ghost pings, scheduling, server settings, and usage analytics.
 
-[![Python](https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![discord.py](https://img.shields.io/badge/discord.py-2.3.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordpy.readthedocs.io)
-[![License](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Live-22c55e?style=for-the-badge)]()
-
-*Pingbomb. Ghost ping. Schedule chaos. Echo anonymously.*
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![discord.py](https://img.shields.io/badge/discord.py-2.3.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
+[![Status](https://img.shields.io/badge/Status-Portfolio%20Ready-22C55E?style=for-the-badge)](#)
+[![License](https://img.shields.io/badge/License-MIT-111827?style=for-the-badge)](LICENSE)
 
 </div>
 
@@ -17,184 +15,195 @@
 
 ## Overview
 
-Axiom is a feature-rich Discord bot designed for servers that want powerful utility commands with fine-grained admin control. Built with a modular architecture, every feature is isolated into its own cog — making it easy to extend, debug, and maintain.
+Axiom is a modular Discord bot built for servers that want high-control ping utilities without sacrificing safety, visibility, or maintainability.
 
----
+Instead of treating Discord commands as one-off scripts, Axiom models ping activity as managed sessions. Each session has validation, cooldowns, rate limits, pause/stop controls, audit logging, persistent server settings, and analytics. The result is a bot that feels closer to a small production service than a throwaway Discord project.
 
-## Features
+## Key Features
 
-### 💣 Pingbomb
-Spam ping a target user with full session control. Supports pause, resume, stop, and an anonymous mode that hides the invoker's identity.
-
-### 👻 Ghost Ping
-Send pings that vanish instantly — the notification fires before Discord can delete the message. Ghost ping a single user up to 10 times, or unleash mass ghost pings on up to 20 users simultaneously.
-
-### ⏰ Scheduled Pingbomb
-Schedule a pingbomb to fire after a custom delay. Supports formats like `30s`, `5m`, `2h`. Admins can view and cancel any scheduled job by ID.
-
-### 📢 Anonymous Echo
-Make the bot deliver any message to any channel with zero trace. The slash command response is ephemeral — no one sees who typed it.
-
-### ⚙️ Per-Server Configuration
-Every server gets its own settings — max ping count, cooldowns, min intervals, allowed channels, and the ability to enable or disable commands entirely.
-
-### 🛡️ Admin Controls
-Full session management for admins — force-stop sessions, clear cooldowns, view active sessions across the server, and override any user's state.
-
----
-
-## Command Reference
-
-| Category | Command | Description |
+| Feature | What it does | Why it matters |
 |---|---|---|
-| 💣 Pingbomb | `/pingbomb` | Start a pingbomb session with pause & stop controls |
-| | `/pingbomb_status` | View your current active session |
-| 👻 Ghost Ping | `/ghostping` | Ghost ping a user up to 10x |
-| | `/massghost` | Ghost ping up to 20 users at once (up to 20x each) |
-| ⏰ Scheduled | `/schedule_pingbomb` | Schedule a pingbomb for later |
-| | `/schedule_list` | View your pending scheduled jobs |
-| | `/schedule_cancel` | Cancel a job by ID *(Admin)* |
-| 📢 Echo | `/echo` | Send an anonymous message to any channel |
-| ⚙️ Settings | `/settings` | View this server's configuration |
-| | `/settings_set_max_count` | Set the maximum ping count |
-| | `/settings_set_cooldown` | Set the cooldown duration |
-| | `/settings_set_min_interval` | Set the minimum ping interval |
-| | `/settings_toggle_pingbomb` | Enable or disable pingbomb |
-| | `/settings_add_channel` | Restrict commands to a channel |
-| | `/settings_remove_channel` | Remove a channel restriction |
-| | `/settings_reset` | Reset all settings to defaults |
-| 🛡️ Admin | `/admin_sessions` | List all active sessions |
-| | `/admin_stop_session` | Force-stop a user's session |
-| | `/admin_stop_all` | Stop all active sessions |
-| | `/admin_clear_cooldown` | Clear a user's cooldown |
-| | `/admin_clear_all_cooldowns` | Clear all cooldowns |
-| 🔧 Utility | `/ping` | Check bot latency |
-| | `/status` | View bot runtime stats |
-| | `/info` | About Axiom |
-| | `/help` | Full command reference |
+| Managed pingbomb sessions | Start controlled ping sessions with count, interval, pause, resume, stop, and anonymous mode | Shows async task orchestration and state management |
+| Ghost ping tools | Send single or mass ghost pings with limits | Demonstrates Discord API handling and permission-aware behavior |
+| Scheduled sessions | Queue a pingbomb for later using human-friendly delays like `30s`, `5m`, or `2h` | Adds real workflow depth beyond simple slash commands |
+| Per-server settings | Configure limits, cooldowns, allowed channels, and feature toggles per guild | Makes the bot adaptable for different communities |
+| Usage analytics | `/stats` shows server and user activity from SQLite | Gives admins visibility and makes the project stand out |
+| Rate limiting | Token bucket protection at user and global levels with retry feedback | Protects the bot from abuse and API pressure |
+| Health endpoints | `/ping`, `/health`, and `/healthz` endpoints for hosting checks | Ready for Render, uptime checks, and basic monitoring |
+| Audit logging | Runtime and session events are written to logs | Improves debugging and operational confidence |
 
----
+## Standout Factor: Smart Rate Limiting
+
+Axiom includes a production-minded rate limiting layer that protects both individual users and the bot as a whole.
+
+Instead of only blocking requests with a generic error, the limiter now estimates when a user can retry and returns clear feedback in Discord. This makes the bot feel more polished and prevents users from guessing whether the bot is broken.
+
+This feature improves the project because it shows real operational thinking:
+
+- Per-user token buckets prevent one member from overwhelming a guild.
+- A global token bucket adds another layer of Discord API protection.
+- Retry estimates give users actionable feedback instead of vague failure messages.
+- Tests cover the async wait behavior so rate limiting does not silently regress.
+
+It fits cleanly into the architecture:
+
+- `core/rate_limiter.py` owns token bucket behavior and retry estimates.
+- `cogs/pingbomb.py` uses the limiter during command validation.
+- `core/pingbomb_engine.py` uses the limiter inside the async ping loop.
+- `tests/test_rate_limiter.py` verifies wait and retry behavior.
 
 ## Architecture
 
-Axiom uses a clean, modular structure where each layer has a single responsibility.
+Axiom uses a layered structure with clear responsibilities:
 
-```
+```text
 axiom-bot-python/
-│
-├── bot/                  # Discord client, cog loader & error handler
-├── cogs/                 # Slash command definitions (one file per feature)
-├── core/                 # Session management, rate limiting, guild config
-├── services/             # Audit logging & background services
-├── ui/                   # Discord UI components (buttons, views)
-├── util/                 # Shared helpers (permissions, time parsing)
-├── data/                 # Persistent per-guild configuration (JSON)
-├── logs/                 # Runtime and audit logs
-│
-├── main.py               # Entry point with smart reconnect logic
-├── config.py             # Environment variable configuration
-├── keep_alive.py         # Flask server for Render/UptimeRobot
-└── requirements.txt
+|
+|-- bot/                  Discord client, cog loader, global error handler
+|-- cogs/                 Slash command modules grouped by feature
+|-- core/                 Session state, rate limiting, cooldowns, config, database
+|-- services/             Audit logging and background service helpers
+|-- ui/                   Discord button views and interaction components
+|-- util/                 Shared helpers for permissions and time parsing
+|-- scripts/              Operational scripts such as deploy smoke checks
+|-- tests/                Unit tests for health routes and core behavior
+|
+|-- main.py               Application entry point with reconnect handling
+|-- config.py             Typed environment-based configuration
+|-- keep_alive.py         Flask health server for hosting platforms
+|-- requirements.txt      Runtime dependencies
 ```
 
-**Key design decisions:**
-- Each cog is fully self-contained and independently loadable
-- Guild configs persist across restarts via JSON storage in `data/`
-- Rate limiting uses a token bucket algorithm per user + global bucket
-- The bot uses a smart retry loop on startup — exponential backoff on 429s
+### Design Highlights
 
----
+- Cogs are loaded dynamically, so new features can be added without changing the bot bootstrap code.
+- Session logic lives in `core/`, keeping command handlers focused on validation and user interaction.
+- SQLite handles persistent guild settings and usage statistics without external infrastructure.
+- The rate limiter uses token buckets to protect both individual users and bot-wide API usage.
+- The keep-alive service makes the bot easy to deploy on free or low-cost hosting.
 
-## Getting Started
+## Command Overview
+
+| Category | Commands |
+|---|---|
+| Ping sessions | `/pingbomb`, `/pingbomb_status` |
+| Ghost pings | `/ghostping`, `/massghost` |
+| Scheduling | `/schedule_pingbomb`, `/schedule_list`, `/schedule_cancel` |
+| Messaging | `/echo` |
+| Analytics | `/stats` |
+| Server settings | `/settings`, `/settings_set_max_count`, `/settings_set_cooldown`, `/settings_set_min_interval`, `/settings_toggle_pingbomb`, `/settings_add_channel`, `/settings_remove_channel`, `/settings_reset` |
+| Admin tools | `/admin_sessions`, `/admin_stop_session`, `/admin_stop_all`, `/admin_clear_cooldown`, `/admin_clear_all_cooldowns` |
+| Utility | `/ping`, `/status`, `/info`, `/help` |
+
+## Setup
 
 ### Prerequisites
-- Python 3.14+
-- A Discord bot token ([Developer Portal](https://discord.com/developers/applications))
 
-### Installation
+- Python 3.11 or newer
+- A Discord application and bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
 
-**1. Clone the repository**
+### Install
+
 ```bash
 git clone https://github.com/sarawagh27/axiom-bot-python.git
 cd axiom-bot-python
-```
-
-**2. Install dependencies**
-```bash
 pip install -r requirements.txt
-```
-
-**3. Configure environment**
-```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
-```env
-DISCORD_TOKEN=your_bot_token_here
-DEV_GUILD_ID=your_server_id_here
-```
+Fill in `.env`, then start the bot:
 
-**4. Run the bot**
 ```bash
 python main.py
 ```
 
----
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---:|---:|---|
+| `DISCORD_TOKEN` | Yes | - | Discord bot token |
+| `DEV_GUILD_ID` | No | empty | Optional guild ID for instant slash command sync during development |
+| `PINGBOMB_MAX_COUNT` | No | `50` | Default maximum pings per session |
+| `PINGBOMB_MIN_INTERVAL` | No | `1.0` | Minimum seconds between pings |
+| `PINGBOMB_MAX_INTERVAL` | No | `60.0` | Maximum seconds between pings |
+| `PINGBOMB_COOLDOWN_SECONDS` | No | `60` | Cooldown after a session ends |
+| `RATE_LIMIT_TOKENS` | No | `10` | Token bucket capacity per user |
+| `RATE_LIMIT_REFILL_RATE` | No | `1.0` | Tokens refilled per second |
+| `LOG_LEVEL` | No | `INFO` | Python logging level |
+| `LOG_MAX_BYTES` | No | `5242880` | Rotating log file size |
+| `LOG_BACKUP_COUNT` | No | `3` | Number of rotated log files to keep |
 
 ## Hosting
 
-Axiom is designed to run 24/7 on [Render](https://render.com) (free tier) with [UptimeRobot](https://uptimerobot.com) preventing spin-down.
+Axiom is ready for Render-style hosting.
 
 | Setting | Value |
 |---|---|
-| Build Command | `pip install -r requirements.txt` |
-| Start Command | `python main.py` |
-| Health Endpoint | `https://your-app.onrender.com/ping` *(also supports `/health` and `/healthz`)* |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `python main.py` |
+| Health check | `/ping`, `/health`, or `/healthz` |
 
-Set `DISCORD_TOKEN` and `DEV_GUILD_ID` as environment variables in the Render dashboard — never commit your token to Git.
-
-### Post-deploy smoke check
-
-After each deploy, run a quick endpoint contract check:
+After deployment, run the smoke check:
 
 ```bash
 python scripts/smoke_check.py https://your-app.onrender.com
 ```
 
-This validates `/ping`, `/health`, and `/healthz` all return HTTP 200 with:
+Expected response:
 
 ```json
-{"status":"ok","bot":"Axiom"}
+{"status": "ok", "bot": "Axiom"}
 ```
 
-For automation in GitHub Actions, add repository secret `RENDER_BASE_URL` with your Render URL (example: `https://your-app.onrender.com`).
+## Screenshots and Demo
 
----
+Recommended assets to add under `docs/assets/`:
 
-## Required Bot Permissions
+| Asset | Suggested file | Where to show it |
+|---|---|---|
+| `/pingbomb` control panel | `docs/assets/pingbomb-session.png` | Directly under Key Features |
+| `/stats` analytics embed | `docs/assets/stats-dashboard.png` | Under Standout Factor |
+| `/settings` configuration view | `docs/assets/server-settings.png` | Under Architecture or Command Overview |
+| Short demo GIF | `docs/assets/axiom-demo.gif` | Near the top, after Overview |
 
-| Permission | Reason |
-|---|---|
-| Send Messages | Core functionality |
-| Manage Messages | Ghost ping deletion |
-| Embed Links | Rich embed responses |
-| Read Message History | Session context |
-| Mention Everyone | Ping functionality |
-| Use Slash Commands | Command registration |
+For maximum impact, use one clean demo GIF near the top and three smaller screenshots lower down. Recruiters should understand the bot's value before they read the setup instructions.
 
----
+## Why This Project Is Different
 
-## Invite
+Most Discord bot projects stop at command handlers. Axiom goes further:
 
-To add Axiom to a server, generate an invite link from the [Discord Developer Portal](https://discord.com/developers/applications) under **OAuth2 → URL Generator**.
+- It has a real session lifecycle instead of fire-and-forget command logic.
+- It separates Discord UI, business logic, persistence, and operational services.
+- It includes rate limiting, cooldowns, permission checks, and admin controls.
+- It stores useful analytics and presents them through a polished `/stats` command.
+- It includes health checks and smoke testing for deployment confidence.
 
-Required scopes: `bot` + `applications.commands`
+## Future Improvements
 
----
+- Add a small web dashboard for analytics and guild settings.
+- Add role-based command permissions per guild.
+- Export `/stats` data as CSV for server admins.
+- Add structured JSON logging for easier production monitoring.
+- Add GitHub Actions for linting, tests, and smoke checks.
 
-<div align="center">
+## Development Notes
 
-*Built with 💙 using [discord.py](https://discordpy.readthedocs.io)*
+Recommended commit style:
 
-</div>
+```text
+feat: add usage analytics command
+fix: prevent rate limiter deadlock
+docs: rewrite README for portfolio presentation
+test: cover token bucket retry behavior
+chore: update gitignore and repository metadata
+```
+
+## Author
+
+Built by [Sara Wagh](https://github.com/sarawagh27).
+
+This project is designed as a portfolio-ready example of async Python, Discord bot architecture, stateful command workflows, and production-minded repository presentation.
+
+## License
+
+Released under the [MIT License](LICENSE).

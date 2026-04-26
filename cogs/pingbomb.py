@@ -99,8 +99,10 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
 
         # 5. Rate limiter
         if not rate_limiter.try_acquire(guild_id, user_id):
+            retry_after = max(1, round(rate_limiter.retry_after(guild_id, user_id)))
             await interaction.response.send_message(
-                "🚦 Rate limit hit. Please wait a moment before trying again.", ephemeral=True,
+                f"Rate limit reached. Try again in about **{retry_after}s**.",
+                ephemeral=True,
             )
             return
 
