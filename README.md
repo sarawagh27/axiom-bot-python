@@ -20,6 +20,10 @@ Axiom is a modular Discord bot built for servers that want high-control ping uti
 
 Instead of treating Discord commands as one-off scripts, Axiom models ping activity as managed sessions. Each session has validation, cooldowns, rate limits, pause/stop controls, audit logging, persistent server settings, and analytics. The result is a bot that feels closer to a small production service than a throwaway Discord project.
 
+<p align="center">
+  <img src="docs/assets/axiom-demo.gif" alt="Axiom Discord bot demo showing settings, ping, pingbomb, and stats workflows" width="850">
+</p>
+
 ## Key Features
 
 | Feature | What it does | Why it matters |
