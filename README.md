@@ -35,7 +35,7 @@ Instead of treating Discord commands as one-off scripts, Axiom models ping activ
 | Usage analytics | `/stats` shows server and user activity from SQLite | Gives admins visibility and makes the project stand out |
 | Operational health scoring | `/ops_health` summarizes recent server telemetry, errors, rate limits, and active sessions | Creates the foundation for server intelligence and future dashboards |
 | Anomaly detection | `/ops_anomalies` detects suspicious sessions, cooldown abuse, command spikes, and repeated failures | Turns raw telemetry into actionable operational intelligence |
-| Web operations dashboard | `/dashboard` shows health, anomalies, events, and analytics in a dark observability UI | Makes Axiom feel like server infrastructure, not only a Discord command bot |
+| Real-time operations dashboard | `/dashboard` streams health, anomalies, events, timeline, and analytics in a dark observability UI | Makes Axiom feel like server infrastructure, not only a Discord command bot |
 | Rate limiting | Token bucket protection at user and global levels with retry feedback | Protects the bot from abuse and API pressure |
 | Health endpoints | `/ping`, `/health`, and `/healthz` endpoints for hosting checks | Ready for Render, uptime checks, and basic monitoring |
 | Audit logging | Runtime and session events are written to logs | Improves debugging and operational confidence |
@@ -54,11 +54,11 @@ The screenshots below show Axiom running inside Discord with real slash-command 
 
 ## Dashboard Screenshots
 
-The operations dashboard runs from the same Flask process as the health endpoints.
+The operations dashboard runs from the same Flask process as the health endpoints and uses Server-Sent Events for live updates.
 
 | Live Operations Dashboard |
 |---|
-| Visit `http://localhost:10000/dashboard` after starting `python main.py` to view health scoring, anomaly cards, command analytics, and the live operational event feed. |
+| Visit `http://localhost:10000/dashboard` after starting `python main.py` to view health scoring, anomaly cards, live metrics, command analytics, the operational timeline, and the streaming event feed. |
 
 ## Operational Intelligence
 
@@ -68,7 +68,8 @@ Axiom's intelligence layer is built around durable telemetry rather than ad hoc 
 - `core/server_health.py` converts recent telemetry into a guild health score and operational status.
 - `core/anomaly_detection.py` detects abnormal ping session activity, cooldown abuse, command spikes, and repeated failures.
 - `services/dashboard_data.py` prepares reusable JSON-ready dashboard snapshots for Flask today and future analytics/AI systems later.
-- `web_dashboard.py` exposes `/dashboard`, `/dashboard/health`, `/dashboard/anomalies`, `/dashboard/events`, and `/dashboard/data`.
+- `web_dashboard.py` exposes `/dashboard`, `/dashboard/health`, `/dashboard/anomalies`, `/dashboard/events`, `/dashboard/timeline`, `/dashboard/data`, and `/dashboard/stream`.
+- `/dashboard/stream` uses Server-Sent Events to push fresh dashboard snapshots and new event cursors without a page refresh.
 
 ### Telemetry Pipeline
 
@@ -82,7 +83,7 @@ usage_stats, audit logs, operational_events
 server_health + anomaly_detection
         |
         v
-Discord admin commands + Flask dashboard + future analytics exports
+Discord admin commands + Flask dashboard + SSE stream + future analytics exports
 ```
 
 ### Anomaly Detection

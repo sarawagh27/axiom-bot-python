@@ -324,7 +324,7 @@ class Database:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         rows = self._conn.execute("""
-            SELECT event_type, severity, source, user_id, target_id, command,
+            SELECT id, event_type, severity, source, user_id, target_id, command,
                    metadata, timestamp
             FROM operational_events
             WHERE guild_id = ?
@@ -334,6 +334,7 @@ class Database:
 
         return [
             {
+                "id": row["id"],
                 "event_type": row["event_type"],
                 "severity": row["severity"],
                 "source": row["source"],
@@ -363,7 +364,7 @@ class Database:
             params.extend(event_types)
 
         rows = self._conn.execute(f"""
-            SELECT event_type, severity, source, user_id, target_id, command,
+            SELECT id, event_type, severity, source, user_id, target_id, command,
                    metadata, timestamp
             FROM operational_events
             WHERE guild_id = ? AND timestamp >= ?{event_filter}
@@ -372,6 +373,7 @@ class Database:
 
         return [
             {
+                "id": row["id"],
                 "event_type": row["event_type"],
                 "severity": row["severity"],
                 "source": row["source"],
@@ -383,6 +385,45 @@ class Database:
             }
             for row in rows
         ]
+
+    def get_operational_events_after(
+        self,
+        guild_id: int,
+        after_id: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return operational events newer than a cursor ID."""
+        rows = self._conn.execute("""
+            SELECT id, event_type, severity, source, user_id, target_id, command,
+                   metadata, timestamp
+            FROM operational_events
+            WHERE guild_id = ? AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+        """, (guild_id, after_id, limit)).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "source": row["source"],
+                "user_id": row["user_id"],
+                "target_id": row["target_id"],
+                "command": row["command"],
+                "metadata": json.loads(row["metadata"]),
+                "timestamp": row["timestamp"],
+            }
+            for row in rows
+        ]
+
+    def get_latest_operational_event_id(self, guild_id: int) -> int:
+        row = self._conn.execute("""
+            SELECT COALESCE(MAX(id), 0) as latest_id
+            FROM operational_events
+            WHERE guild_id = ?
+        """, (guild_id,)).fetchone()
+        return row["latest_id"] or 0
 
     def list_observed_guild_ids(self) -> list[int]:
         """Return guild IDs seen by config, usage, or operational telemetry."""

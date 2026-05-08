@@ -45,12 +45,33 @@ class DashboardRoutesTest(unittest.TestCase):
         anomalies = self.client.get("/dashboard/anomalies?guild_id=123").get_json()
         events = self.client.get("/dashboard/events?guild_id=123").get_json()
         data = self.client.get("/dashboard/data?guild_id=123").get_json()
+        timeline = self.client.get("/dashboard/timeline?guild_id=123").get_json()
 
         self.assertEqual(health["guild_id"], 123)
         self.assertEqual(health["factors"]["rate_limit_pressure"], 1)
         self.assertEqual(anomalies["guild_id"], 123)
         self.assertEqual(events[0]["event_type"], OperationalEventType.COMMAND_RATE_LIMITED)
         self.assertEqual(data["guild_id"], 123)
+        self.assertEqual(timeline[0]["title"], OperationalEventType.COMMAND_RATE_LIMITED)
+
+    def test_dashboard_stream_returns_sse_snapshot(self) -> None:
+        db.record_operational_event(
+            event_type=OperationalEventType.COMMAND_ERROR,
+            severity="error",
+            source="test",
+            guild_id=123,
+            user_id=456,
+            command="pingbomb",
+        )
+
+        response = self.client.get("/dashboard/stream?guild_id=123&once=1")
+        body = response.data.decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/event-stream")
+        self.assertIn("event: dashboard", body)
+        self.assertIn('"latest_event_id"', body)
+        self.assertIn(OperationalEventType.COMMAND_ERROR, body)
 
 
 if __name__ == "__main__":

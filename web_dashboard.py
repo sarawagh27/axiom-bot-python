@@ -4,7 +4,10 @@ web_dashboard.py - Flask routes for Axiom's operational dashboard.
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, render_template, request
+import json
+import time
+
+from flask import Blueprint, Response, jsonify, render_template, request, stream_with_context
 
 from services.dashboard_data import DEFAULT_WINDOW_SECONDS, dashboard_data_service
 
@@ -75,3 +78,47 @@ def dashboard_data():
     limit = _int_arg("limit", 40, minimum=1)
     guild_id = _guild_arg()
     return jsonify(dashboard_data_service.overview(guild_id, window_seconds, limit))
+
+
+@dashboard_bp.route("/dashboard/timeline")
+def dashboard_timeline():
+    window_seconds = _int_arg("window", DEFAULT_WINDOW_SECONDS, minimum=300)
+    limit = _int_arg("limit", 30, minimum=1)
+    guild_id = dashboard_data_service.resolve_guild_id(_guild_arg())
+    if guild_id is None:
+        return jsonify([])
+    return jsonify(dashboard_data_service.timeline(guild_id, window_seconds, limit))
+
+
+@dashboard_bp.route("/dashboard/stream")
+def dashboard_stream():
+    window_seconds = _int_arg("window", DEFAULT_WINDOW_SECONDS, minimum=300)
+    limit = _int_arg("limit", 40, minimum=1)
+    interval = _int_arg("interval", 3, minimum=1)
+    after_id = _int_arg("after_id", 0, minimum=0)
+    once = request.args.get("once") == "1"
+    guild_id = _guild_arg()
+
+    def event_stream():
+        cursor = after_id
+        while True:
+            payload = dashboard_data_service.live_snapshot(
+                guild_id=guild_id,
+                window_seconds=window_seconds,
+                event_limit=limit,
+                after_id=cursor,
+            )
+            cursor = payload.get("latest_event_id", cursor)
+            yield f"event: dashboard\ndata: {json.dumps(payload, default=str)}\n\n"
+            if once:
+                break
+            time.sleep(interval)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

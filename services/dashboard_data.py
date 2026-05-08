@@ -18,6 +18,7 @@ from services.operational_events import OperationalEventType
 
 
 DEFAULT_WINDOW_SECONDS = 3600
+LIVE_WINDOW_SECONDS = 300
 DEFAULT_EVENT_LIMIT = 40
 
 
@@ -66,6 +67,8 @@ class DashboardDataService:
         anomalies = self.anomalies(resolved_guild_id, window_seconds)
         events = self.events(resolved_guild_id, limit=event_limit)
         analytics = self.analytics(resolved_guild_id, window_seconds)
+        live_metrics = self.live_metrics(resolved_guild_id)
+        timeline = self.timeline(resolved_guild_id, window_seconds)
 
         return {
             "guild_id": resolved_guild_id,
@@ -75,6 +78,8 @@ class DashboardDataService:
             "anomalies": anomalies,
             "events": events,
             "analytics": analytics,
+            "live_metrics": live_metrics,
+            "timeline": timeline,
             "guild_ids": self.observed_guild_ids(),
         }
 
@@ -82,12 +87,16 @@ class DashboardDataService:
         snapshot = server_health_analyzer.snapshot(guild_id, window_seconds)
         event_counts = snapshot.event_counts
         anomaly_report = anomaly_detector.detect(guild_id, window_seconds)
+        live_metrics = self.live_metrics(guild_id)
+        score = max(0, snapshot.score - live_metrics["degradation_penalty"])
+        status = self._status_from_score(score)
 
         return {
             "guild_id": guild_id,
-            "score": snapshot.score,
-            "status": snapshot.status,
-            "status_label": _status_label(snapshot.status),
+            "score": score,
+            "base_score": snapshot.score,
+            "status": status,
+            "status_label": _status_label(status),
             "window_seconds": snapshot.window_seconds,
             "total_events": snapshot.total_events,
             "active_sessions": snapshot.active_sessions,
@@ -106,6 +115,7 @@ class DashboardDataService:
                 + snapshot.severity_counts.get("critical", 0),
                 "active_ping_sessions": snapshot.active_sessions,
             },
+            "live_metrics": live_metrics,
         }
 
     def anomalies(
@@ -183,11 +193,153 @@ class DashboardDataService:
             ),
         }
 
+    def live_snapshot(
+        self,
+        guild_id: int | None = None,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+        event_limit: int = DEFAULT_EVENT_LIMIT,
+        after_id: int = 0,
+    ) -> dict[str, Any]:
+        resolved_guild_id = self.resolve_guild_id(guild_id)
+        if resolved_guild_id is None:
+            overview = self._empty_overview(window_seconds)
+            overview["new_events"] = []
+            overview["latest_event_id"] = 0
+            return overview
+
+        overview = self.overview(resolved_guild_id, window_seconds, event_limit)
+        from core.database import db
+
+        new_events = db.get_operational_events_after(
+            resolved_guild_id,
+            after_id=after_id,
+            limit=event_limit,
+        )
+        overview["new_events"] = new_events
+        overview["latest_event_id"] = db.get_latest_operational_event_id(resolved_guild_id)
+        return overview
+
+    def live_metrics(
+        self,
+        guild_id: int,
+        window_seconds: int = LIVE_WINDOW_SECONDS,
+    ) -> dict[str, Any]:
+        from core.database import db
+
+        events = db.get_operational_events(guild_id, window_seconds)
+        event_counts = Counter(event["event_type"] for event in events)
+        severity_counts = Counter(event["severity"] for event in events)
+        cooldown_abuse = sum(
+            1
+            for event in events
+            if event["event_type"] == OperationalEventType.COMMAND_REJECTED
+            and event["metadata"].get("reason") == "cooldown"
+        )
+        anomaly_pressure = sum(
+            event_counts.get(event_type, 0)
+            for event_type in (
+                OperationalEventType.COMMAND_ERROR,
+                OperationalEventType.COMMAND_RATE_LIMITED,
+                OperationalEventType.COMMAND_REJECTED,
+                OperationalEventType.SESSION_STOPPED,
+            )
+        )
+        error_spikes = severity_counts.get("error", 0) + severity_counts.get("critical", 0)
+        command_throughput = event_counts.get(OperationalEventType.COMMAND_USED, 0)
+
+        degradation_penalty = min(
+            45,
+            (anomaly_pressure * 2)
+            + (cooldown_abuse * 2)
+            + (error_spikes * 6)
+            + min(command_throughput // 10, 8),
+        )
+
+        return {
+            "window_seconds": window_seconds,
+            "active_sessions": self.healthless_active_sessions(guild_id),
+            "anomaly_pressure": anomaly_pressure,
+            "cooldown_abuse": cooldown_abuse,
+            "command_throughput": command_throughput,
+            "error_spikes": error_spikes,
+            "rate_limit_pressure": event_counts.get(
+                OperationalEventType.COMMAND_RATE_LIMITED,
+                0,
+            ),
+            "degradation_penalty": degradation_penalty,
+        }
+
+    def timeline(
+        self,
+        guild_id: int,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        events = self.events(guild_id, limit=limit)
+        anomaly_report = anomaly_detector.detect(guild_id, window_seconds)
+
+        items = [
+            {
+                "kind": "event",
+                "timestamp": event["timestamp"],
+                "severity": event["severity"],
+                "title": event["event_type"],
+                "description": self._event_description(event),
+                "context": {
+                    "event_id": event.get("id"),
+                    "user_id": event.get("user_id"),
+                    "target_id": event.get("target_id"),
+                    "command": event.get("command"),
+                },
+            }
+            for event in events
+        ]
+        items.extend(
+            {
+                "kind": "anomaly",
+                "timestamp": anomaly_report.generated_at,
+                "severity": signal.severity,
+                "title": signal.title,
+                "description": signal.description,
+                "context": signal.to_dict(),
+            }
+            for signal in anomaly_report.signals
+        )
+
+        return sorted(items, key=lambda item: item["timestamp"], reverse=True)[:limit]
+
+    def healthless_active_sessions(self, guild_id: int) -> int:
+        from core.session_manager import session_manager
+
+        return len([
+            session for session in session_manager.active_sessions()
+            if session.guild_id == guild_id
+        ])
+
     def _series(self, buckets: Counter[str]) -> list[dict[str, Any]]:
         return [
             {"label": label, "value": buckets[label]}
             for label in sorted(buckets)
         ]
+
+    def _status_from_score(self, score: int) -> str:
+        if score >= 90:
+            return "healthy"
+        if score >= 70:
+            return "watch"
+        if score >= 40:
+            return "degraded"
+        return "critical"
+
+    def _event_description(self, event: dict[str, Any]) -> str:
+        parts = [f"source={event['source']}"]
+        if event.get("command"):
+            parts.append(f"command=/{event['command']}")
+        if event.get("user_id"):
+            parts.append(f"user={event['user_id']}")
+        if event.get("target_id"):
+            parts.append(f"target={event['target_id']}")
+        return " | ".join(parts)
 
     def _empty_overview(self, window_seconds: int) -> dict[str, Any]:
         return {
@@ -235,6 +387,19 @@ class DashboardDataService:
                 "rate_limit_count": 0,
                 "command_error_count": 0,
             },
+            "live_metrics": {
+                "window_seconds": LIVE_WINDOW_SECONDS,
+                "active_sessions": 0,
+                "anomaly_pressure": 0,
+                "cooldown_abuse": 0,
+                "command_throughput": 0,
+                "error_spikes": 0,
+                "rate_limit_pressure": 0,
+                "degradation_penalty": 0,
+            },
+            "timeline": [],
+            "new_events": [],
+            "latest_event_id": 0,
             "guild_ids": [],
         }
 

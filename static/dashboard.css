@@ -40,6 +40,46 @@ body {
   margin-bottom: 24px;
 }
 
+.top-actions {
+  align-items: stretch;
+  display: flex;
+  gap: 12px;
+}
+
+.live-badge {
+  align-items: center;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.34);
+  border-radius: 8px;
+  color: var(--green);
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 800;
+  gap: 8px;
+  letter-spacing: 0;
+  padding: 0 14px;
+}
+
+.live-badge span {
+  animation: livePulse 1.6s ease-in-out infinite;
+  background: var(--green);
+  border-radius: 999px;
+  box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+  height: 8px;
+  width: 8px;
+}
+
+.live-badge.offline {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.34);
+  color: var(--red);
+}
+
+.live-badge.offline span {
+  animation: none;
+  background: var(--red);
+}
+
 .eyebrow,
 .context span,
 .panel-head span,
@@ -152,6 +192,10 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.grid.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .grid.uneven {
   grid-template-columns: 1.4fr 0.8fr;
 }
@@ -179,15 +223,32 @@ h2 {
   font-style: normal;
 }
 
+.live-metric {
+  position: relative;
+}
+
+.live-metric::after {
+  background: var(--blue);
+  border-radius: 999px;
+  content: "";
+  height: 6px;
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  width: 6px;
+}
+
 .anomaly-list,
 .command-list,
-.event-feed {
+.event-feed,
+.timeline {
   display: grid;
   gap: 10px;
 }
 
 .anomaly,
 .event,
+.timeline-item,
 .command-list div {
   background: var(--panel-2);
   border: 1px solid rgba(143, 162, 183, 0.16);
@@ -197,7 +258,8 @@ h2 {
 }
 
 .anomaly p,
-.event p {
+.event p,
+.timeline-item p {
   color: var(--muted);
   font-size: 0.92rem;
   margin-top: 4px;
@@ -205,7 +267,8 @@ h2 {
 
 .anomaly span,
 .event span,
-.event time {
+.event time,
+.timeline-item time {
   color: var(--muted);
   font-size: 0.78rem;
 }
@@ -233,6 +296,40 @@ h2 {
   padding-right: 6px;
 }
 
+.timeline {
+  max-height: 360px;
+  overflow: auto;
+  padding-left: 6px;
+  position: relative;
+}
+
+.timeline::before {
+  background: var(--line);
+  content: "";
+  height: 100%;
+  left: 14px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.timeline-item {
+  margin-left: 18px;
+  position: relative;
+}
+
+.timeline-item::before {
+  background: var(--blue);
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+  content: "";
+  height: 9px;
+  left: -25px;
+  position: absolute;
+  top: 14px;
+  width: 9px;
+}
+
 .event {
   display: grid;
   gap: 4px;
@@ -245,6 +342,52 @@ h2 {
 
 canvas {
   max-width: 100%;
+}
+
+.pulse {
+  animation: valuePulse 0.72s ease-out;
+}
+
+.incoming {
+  animation: slideIn 0.32s ease-out;
+}
+
+@keyframes livePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(52, 211, 153, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+}
+
+@keyframes valuePulse {
+  0% {
+    color: var(--text);
+    transform: scale(1);
+  }
+  35% {
+    color: var(--green);
+    transform: scale(1.04);
+  }
+  100% {
+    color: var(--text);
+    transform: scale(1);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (max-width: 860px) {
@@ -260,6 +403,7 @@ canvas {
   .factor-grid,
   .grid.two,
   .grid.three,
+  .grid.five,
   .grid.uneven {
     grid-template-columns: 1fr;
   }
