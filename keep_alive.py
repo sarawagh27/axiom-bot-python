@@ -7,7 +7,10 @@ never spins down on the free tier.
 from threading import Thread
 from flask import Flask, jsonify
 
+from web_dashboard import dashboard_bp
+
 app = Flask(__name__)
+app.register_blueprint(dashboard_bp)
 
 
 @app.route("/")

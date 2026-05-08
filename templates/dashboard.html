@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Axiom Operations Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</head>
+<body>
+  <main class="shell" data-dashboard='{{ dashboard | tojson }}'>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Axiom Operations</p>
+        <h1>Server Intelligence Dashboard</h1>
+      </div>
+      <div class="context">
+        <span>Guild</span>
+        <strong>{{ dashboard.guild_id or "No telemetry yet" }}</strong>
+      </div>
+    </header>
+
+    <section class="health-band health-{{ dashboard.health.status }}">
+      <div class="score-block">
+        <span>Health Score</span>
+        <strong>{{ dashboard.health.score }}</strong>
+        <em>{{ dashboard.health.status_label }}</em>
+      </div>
+      <div class="factor-grid">
+        <div>
+          <span>Rate Limit Pressure</span>
+          <strong>{{ dashboard.health.factors.rate_limit_pressure }}</strong>
+        </div>
+        <div>
+          <span>Anomalies</span>
+          <strong>{{ dashboard.health.factors.anomaly_count }}</strong>
+        </div>
+        <div>
+          <span>Command Failures</span>
+          <strong>{{ dashboard.health.factors.command_failures }}</strong>
+        </div>
+        <div>
+          <span>Active Sessions</span>
+          <strong>{{ dashboard.health.factors.active_ping_sessions }}</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Command Throughput</h2>
+          <span>per hour</span>
+        </div>
+        <canvas id="commandsChart" height="140"></canvas>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Anomaly Pressure</h2>
+          <span>per hour</span>
+        </div>
+        <canvas id="anomaliesChart" height="140"></canvas>
+      </article>
+    </section>
+
+    <section class="grid three">
+      <article class="panel metric">
+        <span>Ping Sessions</span>
+        <strong>{{ dashboard.analytics.ping_session_frequency }}</strong>
+        <em>{{ dashboard.analytics.ping_delivery_events }} ping events</em>
+      </article>
+      <article class="panel metric">
+        <span>Cooldown Triggers</span>
+        <strong>{{ dashboard.analytics.cooldown_trigger_count }}</strong>
+        <em>retry pressure</em>
+      </article>
+      <article class="panel metric">
+        <span>Command Errors</span>
+        <strong>{{ dashboard.analytics.command_error_count }}</strong>
+        <em>failure events</em>
+      </article>
+    </section>
+
+    <section class="grid two uneven">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Recent Anomalies</h2>
+          <span>{{ dashboard.anomalies.highest_severity }}</span>
+        </div>
+        <div class="anomaly-list">
+          {% for signal in dashboard.anomalies.signals[:6] %}
+          <div class="anomaly severity-{{ signal.severity }}">
+            <strong>{{ signal.title }}</strong>
+            <p>{{ signal.description }}</p>
+            <span>{{ signal.count }} / {{ signal.threshold }} · {{ signal.anomaly_type }}</span>
+          </div>
+          {% else %}
+          <p class="empty">No anomaly thresholds crossed in this window.</p>
+          {% endfor %}
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Top Commands</h2>
+          <span>recent window</span>
+        </div>
+        <div class="command-list">
+          {% for command in dashboard.analytics.top_commands %}
+          <div>
+            <span>/{{ command.command }}</span>
+            <strong>{{ command.uses }}</strong>
+          </div>
+          {% else %}
+          <p class="empty">No command usage recorded yet.</p>
+          {% endfor %}
+        </div>
+      </article>
+    </section>
+
+    <section class="panel feed-panel">
+      <div class="panel-head">
+        <h2>Live Event Feed</h2>
+        <span>{{ dashboard.events|length }} events</span>
+      </div>
+      <div class="event-feed">
+        {% for event in dashboard.events %}
+        <div class="event severity-{{ event.severity }}">
+          <time data-ts="{{ event.timestamp }}">{{ event.timestamp|int }}</time>
+          <strong>{{ event.event_type }}</strong>
+          <span>{{ event.severity }}</span>
+          <p>
+            source={{ event.source }}
+            {% if event.command %} · command=/{{ event.command }}{% endif %}
+            {% if event.user_id %} · user={{ event.user_id }}{% endif %}
+          </p>
+        </div>
+        {% else %}
+        <p class="empty">No operational events have been recorded yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+  </main>
+</body>
+</html>

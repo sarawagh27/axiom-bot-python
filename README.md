@@ -2,7 +2,7 @@
 
 # Axiom
 
-### A controlled Discord utility bot for ping sessions, ghost pings, scheduling, server settings, and usage analytics.
+### An operational intelligence platform for Discord server infrastructure.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.3.2-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
@@ -16,9 +16,9 @@
 
 ## Overview
 
-Axiom is a modular Discord bot built for servers that want high-control ping utilities without sacrificing safety, visibility, or maintainability.
+Axiom is a modular Discord operations platform built for servers that want high-control ping utilities, abuse visibility, and production-style observability without external infrastructure.
 
-Instead of treating Discord commands as one-off scripts, Axiom models ping activity as managed sessions. Each session has validation, cooldowns, rate limits, pause/stop controls, audit logging, persistent server settings, and analytics. The result is a bot that feels closer to a small production service than a throwaway Discord project.
+Instead of treating Discord commands as one-off scripts, Axiom models ping activity as managed sessions. Each session has validation, cooldowns, rate limits, pause/stop controls, audit logging, persistent server settings, operational telemetry, anomaly detection, and a live Flask dashboard. The result is a bot that feels closer to a small infrastructure product than a throwaway Discord project.
 
 <p align="center">
   <img src="docs/assets/axiom-demo.gif" alt="Axiom Discord bot demo showing settings, ping, pingbomb, and stats workflows" width="850">
@@ -35,6 +35,7 @@ Instead of treating Discord commands as one-off scripts, Axiom models ping activ
 | Usage analytics | `/stats` shows server and user activity from SQLite | Gives admins visibility and makes the project stand out |
 | Operational health scoring | `/ops_health` summarizes recent server telemetry, errors, rate limits, and active sessions | Creates the foundation for server intelligence and future dashboards |
 | Anomaly detection | `/ops_anomalies` detects suspicious sessions, cooldown abuse, command spikes, and repeated failures | Turns raw telemetry into actionable operational intelligence |
+| Web operations dashboard | `/dashboard` shows health, anomalies, events, and analytics in a dark observability UI | Makes Axiom feel like server infrastructure, not only a Discord command bot |
 | Rate limiting | Token bucket protection at user and global levels with retry feedback | Protects the bot from abuse and API pressure |
 | Health endpoints | `/ping`, `/health`, and `/healthz` endpoints for hosting checks | Ready for Render, uptime checks, and basic monitoring |
 | Audit logging | Runtime and session events are written to logs | Improves debugging and operational confidence |
@@ -50,6 +51,50 @@ The screenshots below show Axiom running inside Discord with real slash-command 
 | Server Settings |
 |---|
 | <img src="docs/assets/server-settings.png" alt="Axiom server settings showing pingbomb limits and allowed channels" width="850"> |
+
+## Dashboard Screenshots
+
+The operations dashboard runs from the same Flask process as the health endpoints.
+
+| Live Operations Dashboard |
+|---|
+| Visit `http://localhost:10000/dashboard` after starting `python main.py` to view health scoring, anomaly cards, command analytics, and the live operational event feed. |
+
+## Operational Intelligence
+
+Axiom's intelligence layer is built around durable telemetry rather than ad hoc command counters:
+
+- `operational_events` stores structured lifecycle, usage, error, cooldown, rate-limit, and admin activity.
+- `core/server_health.py` converts recent telemetry into a guild health score and operational status.
+- `core/anomaly_detection.py` detects abnormal ping session activity, cooldown abuse, command spikes, and repeated failures.
+- `services/dashboard_data.py` prepares reusable JSON-ready dashboard snapshots for Flask today and future analytics/AI systems later.
+- `web_dashboard.py` exposes `/dashboard`, `/dashboard/health`, `/dashboard/anomalies`, `/dashboard/events`, and `/dashboard/data`.
+
+### Telemetry Pipeline
+
+```text
+Discord commands and session engine
+        |
+        v
+usage_stats, audit logs, operational_events
+        |
+        v
+server_health + anomaly_detection
+        |
+        v
+Discord admin commands + Flask dashboard + future analytics exports
+```
+
+### Anomaly Detection
+
+The detector is intentionally modular. It consumes the same SQLite telemetry as the dashboard and emits reusable report objects with severity, thresholds, actor context, command context, and event type. Current signals include:
+
+- abnormal ping session volume
+- elevated ping delivery activity
+- repeated cooldown hits
+- rate-limit pressure
+- command usage spikes
+- repeated command/runtime failures
 
 ## Standout Factor: Smart Rate Limiting
 
@@ -80,8 +125,10 @@ axiom-bot-python/
 |
 |-- bot/                  Discord client, cog loader, global error handler
 |-- cogs/                 Slash command modules grouped by feature
-|-- core/                 Session state, rate limiting, cooldowns, config, database
-|-- services/             Audit logging and background service helpers
+|-- core/                 Session state, rate limiting, cooldowns, database, health, anomalies
+|-- services/             Audit logging, telemetry, dashboard data helpers
+|-- static/               Dashboard CSS and JavaScript
+|-- templates/            Flask dashboard templates
 |-- ui/                   Discord button views and interaction components
 |-- util/                 Shared helpers for permissions and time parsing
 |-- scripts/              Operational scripts such as deploy smoke checks
@@ -89,7 +136,8 @@ axiom-bot-python/
 |
 |-- main.py               Application entry point with reconnect handling
 |-- config.py             Typed environment-based configuration
-|-- keep_alive.py         Flask health server for hosting platforms
+|-- keep_alive.py         Flask health and dashboard server for hosting platforms
+|-- web_dashboard.py      Dashboard routes and JSON endpoints
 |-- requirements.txt      Runtime dependencies
 ```
 
@@ -98,8 +146,9 @@ axiom-bot-python/
 - Cogs are loaded dynamically, so new features can be added without changing the bot bootstrap code.
 - Session logic lives in `core/`, keeping command handlers focused on validation and user interaction.
 - SQLite handles persistent guild settings and usage statistics without external infrastructure.
+- The telemetry layer records operational events once and reuses them for health scoring, anomaly detection, dashboard panels, and future exports.
 - The rate limiter uses token buckets to protect both individual users and bot-wide API usage.
-- The keep-alive service makes the bot easy to deploy on free or low-cost hosting.
+- The keep-alive service also exposes a lightweight operations dashboard for visual observability.
 
 ## Command Overview
 
@@ -210,7 +259,7 @@ Most Discord bot projects stop at command handlers. Axiom goes further:
 
 ## Future Improvements
 
-- Add a small web dashboard for analytics and guild settings.
+- Add dashboard authentication and guild settings controls.
 - Add role-based command permissions per guild.
 - Export `/stats` data as CSV for server admins.
 - Add structured JSON logging for easier production monitoring.

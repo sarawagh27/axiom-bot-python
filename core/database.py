@@ -384,6 +384,44 @@ class Database:
             for row in rows
         ]
 
+    def list_observed_guild_ids(self) -> list[int]:
+        """Return guild IDs seen by config, usage, or operational telemetry."""
+        rows = self._conn.execute("""
+            SELECT guild_id FROM guild_configs
+            UNION
+            SELECT guild_id FROM usage_stats
+            UNION
+            SELECT guild_id FROM operational_events WHERE guild_id IS NOT NULL
+            ORDER BY guild_id ASC
+        """).fetchall()
+        return [row["guild_id"] for row in rows]
+
+    def get_command_usage_summary(
+        self,
+        guild_id: int,
+        window_seconds: int = 3600,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Return command usage counts for a recent window."""
+        since = time.time() - window_seconds
+        rows = self._conn.execute("""
+            SELECT command, COUNT(*) as uses, COALESCE(SUM(count), 0) as volume
+            FROM usage_stats
+            WHERE guild_id = ? AND timestamp >= ?
+            GROUP BY command
+            ORDER BY uses DESC, command ASC
+            LIMIT ?
+        """, (guild_id, since, limit)).fetchall()
+
+        return [
+            {
+                "command": row["command"],
+                "uses": row["uses"],
+                "volume": row["volume"],
+            }
+            for row in rows
+        ]
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
