@@ -193,6 +193,7 @@ class UtilityCog(commands.Cog, name="Utility"):
             ],
             "Operations (Admin)": [
                 ("`/ops_health`", "View operational health and recent risk signals"),
+                ("`/ops_anomalies`", "Detect unusual sessions, cooldown abuse, command spikes, and failures"),
             ],
         }
 

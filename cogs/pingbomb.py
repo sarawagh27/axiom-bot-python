@@ -88,6 +88,18 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
         # 3. Cooldown check
         remaining = cooldown_manager.check(guild_id, user_id)
         if remaining is not None:
+            operational_event_recorder.record(
+                event_type=OperationalEventType.COMMAND_REJECTED,
+                source="pingbomb_command",
+                severity="warning",
+                guild_id=guild_id,
+                user_id=user_id,
+                command="pingbomb",
+                metadata={
+                    "reason": "cooldown",
+                    "remaining_seconds": round(remaining, 3),
+                },
+            )
             await interaction.response.send_message(
                 f"⏳ You're on cooldown. Try again in **{format_duration(remaining)}**.",
                 ephemeral=True,

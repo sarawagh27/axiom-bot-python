@@ -346,6 +346,44 @@ class Database:
             for row in rows
         ]
 
+    def get_operational_events(
+        self,
+        guild_id: int,
+        window_seconds: int = 3600,
+        event_types: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Return raw operational events for analyzers and dashboards."""
+        since = time.time() - window_seconds
+        params: list[Any] = [guild_id, since]
+        event_filter = ""
+
+        if event_types:
+            placeholders = ", ".join("?" for _ in event_types)
+            event_filter = f" AND event_type IN ({placeholders})"
+            params.extend(event_types)
+
+        rows = self._conn.execute(f"""
+            SELECT event_type, severity, source, user_id, target_id, command,
+                   metadata, timestamp
+            FROM operational_events
+            WHERE guild_id = ? AND timestamp >= ?{event_filter}
+            ORDER BY timestamp ASC
+        """, params).fetchall()
+
+        return [
+            {
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "source": row["source"],
+                "user_id": row["user_id"],
+                "target_id": row["target_id"],
+                "command": row["command"],
+                "metadata": json.loads(row["metadata"]),
+                "timestamp": row["timestamp"],
+            }
+            for row in rows
+        ]
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
