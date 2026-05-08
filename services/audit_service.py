@@ -64,6 +64,11 @@ class AuditService:
             logging.getLogger("axiom.audit_service").error(
                 "Failed to write audit record: %s", exc
             )
+            return
+
+        from services.operational_events import operational_event_recorder
+
+        operational_event_recorder.record_session_event(event, session, extra)
 
     def log_admin_action(
         self,
@@ -88,6 +93,16 @@ class AuditService:
             logging.getLogger("axiom.audit_service").error(
                 "Failed to write admin audit record: %s", exc
             )
+            return
+
+        from services.operational_events import operational_event_recorder
+
+        operational_event_recorder.record_admin_action(
+            action=action,
+            admin_id=admin_id,
+            guild_id=guild_id,
+            metadata=details,
+        )
 
 
 # Module-level singleton

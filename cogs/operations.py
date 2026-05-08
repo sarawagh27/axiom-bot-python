@@ -1,0 +1,92 @@
+"""
+cogs/operations.py - operational intelligence commands for server admins.
+"""
+
+from __future__ import annotations
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from core.server_health import ServerHealthSnapshot, server_health_analyzer
+from util.permissions import is_admin
+
+
+def _format_counts(counts: dict[str, int], *, limit: int = 5) -> str:
+    if not counts:
+        return "None"
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return "\n".join(f"`{name}`: **{count}**" for name, count in ordered[:limit])
+
+
+def _status_colour(snapshot: ServerHealthSnapshot) -> discord.Colour:
+    if snapshot.status == "healthy":
+        return discord.Colour.green()
+    if snapshot.status == "watch":
+        return discord.Colour.gold()
+    if snapshot.status == "degraded":
+        return discord.Colour.orange()
+    return discord.Colour.red()
+
+
+class OperationsCog(commands.Cog, name="Operations"):
+    """Admin-only operational intelligence surfaces."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @app_commands.command(
+        name="ops_health",
+        description="[Admin] View Axiom's recent operational health for this server.",
+    )
+    @app_commands.describe(
+        window_minutes="Lookback window in minutes (default: 60)."
+    )
+    @app_commands.guild_only()
+    @is_admin()
+    async def ops_health(
+        self,
+        interaction: discord.Interaction,
+        window_minutes: app_commands.Range[int, 15, 1440] = 60,
+    ) -> None:
+        snapshot = server_health_analyzer.snapshot(
+            guild_id=interaction.guild_id,
+            window_seconds=window_minutes * 60,
+        )
+
+        embed = discord.Embed(
+            title=f"Operational Health - {interaction.guild.name}",
+            description=f"**{snapshot.score}/100** - `{snapshot.status}`",
+            colour=_status_colour(snapshot),
+        )
+        embed.add_field(name="Window", value=f"{window_minutes} minutes", inline=True)
+        embed.add_field(name="Events", value=str(snapshot.total_events), inline=True)
+        embed.add_field(name="Active Sessions", value=str(snapshot.active_sessions), inline=True)
+        embed.add_field(name="Unique Users", value=str(snapshot.unique_users), inline=True)
+        if snapshot.last_event_ts:
+            embed.add_field(
+                name="Last Event",
+                value=f"<t:{int(snapshot.last_event_ts)}:R>",
+                inline=True,
+            )
+        embed.add_field(
+            name="Severity Mix",
+            value=_format_counts(snapshot.severity_counts),
+            inline=False,
+        )
+        embed.add_field(
+            name="Top Event Types",
+            value=_format_counts(snapshot.event_counts),
+            inline=False,
+        )
+        embed.add_field(
+            name="Signals",
+            value="\n".join(f"- {signal}" for signal in snapshot.signals),
+            inline=False,
+        )
+        embed.set_footer(text="Backed by SQLite operational_events telemetry")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(OperationsCog(bot))

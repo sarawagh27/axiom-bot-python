@@ -33,6 +33,7 @@ Instead of treating Discord commands as one-off scripts, Axiom models ping activ
 | Scheduled sessions | Queue a pingbomb for later using human-friendly delays like `30s`, `5m`, or `2h` | Adds real workflow depth beyond simple slash commands |
 | Per-server settings | Configure limits, cooldowns, allowed channels, and feature toggles per guild | Makes the bot adaptable for different communities |
 | Usage analytics | `/stats` shows server and user activity from SQLite | Gives admins visibility and makes the project stand out |
+| Operational health scoring | `/ops_health` summarizes recent server telemetry, errors, rate limits, and active sessions | Creates the foundation for server intelligence and future dashboards |
 | Rate limiting | Token bucket protection at user and global levels with retry feedback | Protects the bot from abuse and API pressure |
 | Health endpoints | `/ping`, `/health`, and `/healthz` endpoints for hosting checks | Ready for Render, uptime checks, and basic monitoring |
 | Audit logging | Runtime and session events are written to logs | Improves debugging and operational confidence |
@@ -108,6 +109,7 @@ axiom-bot-python/
 | Scheduling | `/schedule_pingbomb`, `/schedule_list`, `/schedule_cancel` |
 | Messaging | `/echo` |
 | Analytics | `/stats` |
+| Operations | `/ops_health` |
 | Server settings | `/settings`, `/settings_set_max_count`, `/settings_set_cooldown`, `/settings_set_min_interval`, `/settings_toggle_pingbomb`, `/settings_add_channel`, `/settings_remove_channel`, `/settings_reset` |
 | Admin tools | `/admin_sessions`, `/admin_stop_session`, `/admin_stop_all`, `/admin_clear_cooldown`, `/admin_clear_all_cooldowns` |
 | Utility | `/ping`, `/status`, `/info`, `/help` |
@@ -201,6 +203,7 @@ Most Discord bot projects stop at command handlers. Axiom goes further:
 - It separates Discord UI, business logic, persistence, and operational services.
 - It includes rate limiting, cooldowns, permission checks, and admin controls.
 - It stores useful analytics and presents them through a polished `/stats` command.
+- It records durable operational events that power `/ops_health` and establish a base for anomaly detection, heatmaps, adaptive tuning, and dashboards.
 - It includes health checks and smoke testing for deployment confidence.
 
 ## Future Improvements

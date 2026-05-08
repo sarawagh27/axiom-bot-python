@@ -17,6 +17,10 @@ from core.cooldown_manager import cooldown_manager
 from core.rate_limiter import rate_limiter
 from core.pingbomb_engine import PingbombEngine
 from core.guild_config import guild_config_manager
+from services.operational_events import (
+    OperationalEventType,
+    operational_event_recorder,
+)
 from ui.pingbomb_view import PingbombView
 from util.permissions import bot_has_permissions
 from util.time_utils import format_duration
@@ -100,6 +104,15 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
         # 5. Rate limiter
         if not rate_limiter.try_acquire(guild_id, user_id):
             retry_after = max(1, round(rate_limiter.retry_after(guild_id, user_id)))
+            operational_event_recorder.record(
+                event_type=OperationalEventType.COMMAND_RATE_LIMITED,
+                source="pingbomb_command",
+                severity="warning",
+                guild_id=guild_id,
+                user_id=user_id,
+                command="pingbomb",
+                metadata={"retry_after": retry_after},
+            )
             await interaction.response.send_message(
                 f"Rate limit reached. Try again in about **{retry_after}s**.",
                 ephemeral=True,

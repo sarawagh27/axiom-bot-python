@@ -125,6 +125,7 @@ class PingbombEngine:
             )
             if session.state not in (SessionState.STOPPED, SessionState.COMPLETED):
                 session.state = SessionState.STOPPED
+            audit_service.log_event("SESSION_STOPPED", session, extra={"reason": "cancelled"})
 
         except Exception as exc:  # noqa: BLE001
             log.exception(
@@ -132,6 +133,11 @@ class PingbombEngine:
                 session.guild_id, session.user_id, exc,
             )
             session.state = SessionState.STOPPED
+            audit_service.log_event(
+                "SESSION_STOPPED",
+                session,
+                extra={"reason": "unexpected_error", "error": str(exc)},
+            )
 
         finally:
             await self._cleanup(session)

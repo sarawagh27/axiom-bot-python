@@ -10,7 +10,8 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Optional
+import time
+from typing import Any, Optional
 
 from config import CONFIG
 
@@ -68,6 +69,28 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_stats_user
                 ON usage_stats (guild_id, user_id);
+
+            CREATE TABLE IF NOT EXISTS operational_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id     INTEGER,
+                event_type   TEXT    NOT NULL,
+                severity     TEXT    NOT NULL DEFAULT 'info',
+                source       TEXT    NOT NULL,
+                user_id      INTEGER,
+                target_id    INTEGER,
+                command      TEXT,
+                metadata     TEXT    NOT NULL DEFAULT '{}',
+                timestamp    REAL    NOT NULL DEFAULT (unixepoch())
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_operational_events_guild_time
+                ON operational_events (guild_id, timestamp);
+
+            CREATE INDEX IF NOT EXISTS idx_operational_events_type_time
+                ON operational_events (event_type, timestamp);
+
+            CREATE INDEX IF NOT EXISTS idx_operational_events_severity_time
+                ON operational_events (severity, timestamp);
         """)
         self._conn.commit()
 
@@ -149,6 +172,16 @@ class Database:
             VALUES (?, ?, ?, ?, ?)
         """, (guild_id, user_id, command, target_id, count))
         self._conn.commit()
+        self.record_operational_event(
+            event_type="command_used",
+            severity="info",
+            source="usage_stats",
+            guild_id=guild_id,
+            user_id=user_id,
+            target_id=target_id,
+            command=command,
+            metadata={"count": count},
+        )
 
     def get_guild_stats(self, guild_id: int) -> dict:
         """Returns aggregate stats for a guild."""
@@ -203,9 +236,120 @@ class Database:
             "last_used": row["last_used"],
         }
 
+    # ------------------------------------------------------------------
+    # Operational Events
+    # ------------------------------------------------------------------
+
+    def record_operational_event(
+        self,
+        event_type: str,
+        source: str,
+        severity: str = "info",
+        guild_id: Optional[int] = None,
+        user_id: Optional[int] = None,
+        target_id: Optional[int] = None,
+        command: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+    ) -> None:
+        """Persist a structured operational event for analytics and health scoring."""
+        self._conn.execute("""
+            INSERT INTO operational_events (
+                guild_id, event_type, severity, source, user_id, target_id,
+                command, metadata, timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            guild_id,
+            event_type,
+            severity,
+            source,
+            user_id,
+            target_id,
+            command,
+            json.dumps(metadata or {}, default=str, sort_keys=True),
+            timestamp or time.time(),
+        ))
+        self._conn.commit()
+
+    def get_operational_event_summary(
+        self,
+        guild_id: int,
+        window_seconds: int = 3600,
+    ) -> dict[str, Any]:
+        """Return aggregate operational events for a guild over a recent window."""
+        since = time.time() - window_seconds
+        base_params = (guild_id, since)
+
+        total_row = self._conn.execute("""
+            SELECT
+                COUNT(*) as total_events,
+                COUNT(DISTINCT user_id) as unique_users,
+                MAX(timestamp) as last_event_ts
+            FROM operational_events
+            WHERE guild_id = ? AND timestamp >= ?
+        """, base_params).fetchone()
+
+        severity_rows = self._conn.execute("""
+            SELECT severity, COUNT(*) as count
+            FROM operational_events
+            WHERE guild_id = ? AND timestamp >= ?
+            GROUP BY severity
+        """, base_params).fetchall()
+
+        event_rows = self._conn.execute("""
+            SELECT event_type, COUNT(*) as count
+            FROM operational_events
+            WHERE guild_id = ? AND timestamp >= ?
+            GROUP BY event_type
+            ORDER BY count DESC, event_type ASC
+        """, base_params).fetchall()
+
+        return {
+            "window_seconds": window_seconds,
+            "total_events": total_row["total_events"] or 0,
+            "unique_users": total_row["unique_users"] or 0,
+            "last_event_ts": total_row["last_event_ts"],
+            "severity_counts": {
+                row["severity"]: row["count"] for row in severity_rows
+            },
+            "event_counts": {
+                row["event_type"]: row["count"] for row in event_rows
+            },
+        }
+
+    def get_recent_operational_events(
+        self,
+        guild_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT event_type, severity, source, user_id, target_id, command,
+                   metadata, timestamp
+            FROM operational_events
+            WHERE guild_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (guild_id, limit)).fetchall()
+
+        return [
+            {
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "source": row["source"],
+                "user_id": row["user_id"],
+                "target_id": row["target_id"],
+                "command": row["command"],
+                "metadata": json.loads(row["metadata"]),
+                "timestamp": row["timestamp"],
+            }
+            for row in rows
+        ]
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
+            self._conn = None
             log.info("Database connection closed.")
 
 

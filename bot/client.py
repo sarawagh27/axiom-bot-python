@@ -10,6 +10,10 @@ from discord.ext import commands
 
 from config import CONFIG
 from bot.loader import load_all_cogs
+from services.operational_events import (
+    OperationalEventType,
+    operational_event_recorder,
+)
 # error handler loaded as a cog automatically
 
 log = logging.getLogger("axiom.client")
@@ -60,6 +64,15 @@ class AxiomBot(commands.Bot):
             self.user.id,
             len(self.guilds),
         )
+        operational_event_recorder.record(
+            event_type=OperationalEventType.BOT_LIFECYCLE,
+            source="discord_client",
+            metadata={
+                "state": "ready",
+                "bot_user_id": self.user.id,
+                "guild_count": len(self.guilds),
+            },
+        )
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
@@ -69,6 +82,18 @@ class AxiomBot(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         log.info("Joined guild: %s (ID: %s)", guild.name, guild.id)
+        operational_event_recorder.record(
+            event_type=OperationalEventType.GUILD_JOINED,
+            source="discord_client",
+            guild_id=guild.id,
+            metadata={"guild_name": guild.name, "member_count": guild.member_count},
+        )
 
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         log.info("Removed from guild: %s (ID: %s)", guild.name, guild.id)
+        operational_event_recorder.record(
+            event_type=OperationalEventType.GUILD_REMOVED,
+            source="discord_client",
+            guild_id=guild.id,
+            metadata={"guild_name": guild.name},
+        )

@@ -191,6 +191,9 @@ class UtilityCog(commands.Cog, name="Utility"):
                 ("`/admin_clear_cooldown`", "Clear a specific user's cooldown"),
                 ("`/admin_clear_all_cooldowns`", "Clear all cooldowns in this server"),
             ],
+            "Operations (Admin)": [
+                ("`/ops_health`", "View operational health and recent risk signals"),
+            ],
         }
 
         for section, cmds in sections.items():

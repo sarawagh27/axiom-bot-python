@@ -13,6 +13,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from services.operational_events import operational_event_recorder
+
 log = logging.getLogger("axiom.error_handler")
 
 
@@ -39,6 +41,12 @@ class ErrorHandler(commands.Cog):
             interaction.user.id,
             original,
             "".join(traceback.format_exception(type(original), original, original.__traceback__)),
+        )
+        operational_event_recorder.record_command_error(
+            command=interaction.command.name if interaction.command else "unknown",
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id if interaction.user else None,
+            error=original,
         )
 
         # User-friendly messages based on error type
