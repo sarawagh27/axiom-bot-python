@@ -1,8 +1,8 @@
 """
 core/anomaly_detection.py - telemetry-backed anomaly detection.
 
-The detector consumes operational_events so Discord commands, dashboards,
-exports, and future background jobs can all use the same analysis contract.
+The detector consumes operational_events so Discord commands, exports, and
+future background jobs can all use the same analysis contract.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from services.operational_events import OperationalEventType
+from core.telemetry import EventName
 
 
 @dataclass(frozen=True)
@@ -112,8 +112,8 @@ class AnomalyDetector:
         events: list[dict[str, Any]],
     ) -> list[AnomalySignal]:
         cfg = self._config
-        starts = [e for e in events if e["event_type"] == OperationalEventType.SESSION_STARTED]
-        pings = [e for e in events if e["event_type"] == OperationalEventType.SESSION_PING]
+        starts = [e for e in events if e["event_type"] == EventName.SESSION_STARTED]
+        pings = [e for e in events if e["event_type"] == EventName.SESSION_PING]
         signals: list[AnomalySignal] = []
 
         if len(starts) >= cfg.session_starts_guild:
@@ -126,7 +126,7 @@ class AnomalyDetector:
                 threshold=cfg.session_starts_guild,
                 guild_id=guild_id,
                 window_seconds=window_seconds,
-                event_type=OperationalEventType.SESSION_STARTED,
+                event_type=EventName.SESSION_STARTED,
             ))
 
         if len(pings) >= cfg.session_pings_guild:
@@ -139,7 +139,7 @@ class AnomalyDetector:
                 threshold=cfg.session_pings_guild,
                 guild_id=guild_id,
                 window_seconds=window_seconds,
-                event_type=OperationalEventType.SESSION_PING,
+                event_type=EventName.SESSION_PING,
             ))
 
         starts_by_user = Counter(e["user_id"] for e in starts if e["user_id"] is not None)
@@ -155,7 +155,7 @@ class AnomalyDetector:
                     guild_id=guild_id,
                     window_seconds=window_seconds,
                     actor_id=user_id,
-                    event_type=OperationalEventType.SESSION_STARTED,
+                    event_type=EventName.SESSION_STARTED,
                 ))
 
         return signals
@@ -169,12 +169,12 @@ class AnomalyDetector:
         cfg = self._config
         cooldown_rejections = [
             e for e in events
-            if e["event_type"] == OperationalEventType.COMMAND_REJECTED
+            if e["event_type"] == EventName.COMMAND_REJECTED
             and e["metadata"].get("reason") == "cooldown"
         ]
         rate_limits = [
             e for e in events
-            if e["event_type"] == OperationalEventType.COMMAND_RATE_LIMITED
+            if e["event_type"] == EventName.COMMAND_RATE_LIMITED
         ]
         signals: list[AnomalySignal] = []
 
@@ -192,7 +192,7 @@ class AnomalyDetector:
                     window_seconds=window_seconds,
                     actor_id=user_id,
                     command="pingbomb",
-                    event_type=OperationalEventType.COMMAND_REJECTED,
+                    event_type=EventName.COMMAND_REJECTED,
                 ))
 
         rate_limits_by_user = Counter(e["user_id"] for e in rate_limits if e["user_id"] is not None)
@@ -208,7 +208,7 @@ class AnomalyDetector:
                     guild_id=guild_id,
                     window_seconds=window_seconds,
                     actor_id=user_id,
-                    event_type=OperationalEventType.COMMAND_RATE_LIMITED,
+                    event_type=EventName.COMMAND_RATE_LIMITED,
                 ))
 
         return signals
@@ -220,7 +220,7 @@ class AnomalyDetector:
         events: list[dict[str, Any]],
     ) -> list[AnomalySignal]:
         cfg = self._config
-        command_events = [e for e in events if e["event_type"] == OperationalEventType.COMMAND_USED]
+        command_events = [e for e in events if e["event_type"] == EventName.COMMAND_USED]
         signals: list[AnomalySignal] = []
 
         if len(command_events) >= cfg.command_uses_guild:
@@ -233,7 +233,7 @@ class AnomalyDetector:
                 threshold=cfg.command_uses_guild,
                 guild_id=guild_id,
                 window_seconds=window_seconds,
-                event_type=OperationalEventType.COMMAND_USED,
+                event_type=EventName.COMMAND_USED,
             ))
 
         by_user: Counter[int] = Counter()
@@ -258,7 +258,7 @@ class AnomalyDetector:
                     guild_id=guild_id,
                     window_seconds=window_seconds,
                     actor_id=user_id,
-                    event_type=OperationalEventType.COMMAND_USED,
+                    event_type=EventName.COMMAND_USED,
                 ))
 
         for command, count in by_command.items():
@@ -273,7 +273,7 @@ class AnomalyDetector:
                     guild_id=guild_id,
                     window_seconds=window_seconds,
                     command=command,
-                    event_type=OperationalEventType.COMMAND_USED,
+                    event_type=EventName.COMMAND_USED,
                 ))
 
         return signals
@@ -286,7 +286,7 @@ class AnomalyDetector:
     ) -> list[AnomalySignal]:
         cfg = self._config
         errors = [e for e in events if e["severity"] in {"error", "critical"}]
-        rejections = [e for e in events if e["event_type"] == OperationalEventType.COMMAND_REJECTED]
+        rejections = [e for e in events if e["event_type"] == EventName.COMMAND_REJECTED]
         signals: list[AnomalySignal] = []
 
         if len(errors) >= cfg.errors_total:
@@ -299,7 +299,7 @@ class AnomalyDetector:
                 threshold=cfg.errors_total,
                 guild_id=guild_id,
                 window_seconds=window_seconds,
-                event_type=OperationalEventType.COMMAND_ERROR,
+                event_type=EventName.COMMAND_ERROR,
             ))
 
         if len(rejections) >= cfg.rejected_commands_total:
@@ -312,7 +312,7 @@ class AnomalyDetector:
                 threshold=cfg.rejected_commands_total,
                 guild_id=guild_id,
                 window_seconds=window_seconds,
-                event_type=OperationalEventType.COMMAND_REJECTED,
+                event_type=EventName.COMMAND_REJECTED,
             ))
 
         return signals

@@ -11,7 +11,6 @@ import sys
 
 from config import CONFIG
 from bot.client import AxiomBot
-from keep_alive import keep_alive
 from core.database import db
 
 
@@ -51,9 +50,6 @@ async def main() -> None:
     # Connect database
     db.connect()
     log.info("Database ready.")
-
-    keep_alive()
-    log.info("Keep-alive server started on /ping, /health, and /healthz.")
 
     retry_delay = 60
     max_delay = 300

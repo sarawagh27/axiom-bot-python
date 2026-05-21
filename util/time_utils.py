@@ -7,8 +7,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# Regex: matches patterns like "10s", "2m", "1h", "1m30s"
+# Regex: matches patterns like "10s", "2m", "1h", "1d", "1m30s"
 _DURATION_RE = re.compile(
+    r"(?:(?P<days>\d+)\s*d)?"
     r"(?:(?P<hours>\d+)\s*h)?"
     r"(?:(?P<minutes>\d+)\s*m)?"
     r"(?:(?P<seconds>\d+(?:\.\d+)?)\s*s)?",
@@ -26,6 +27,8 @@ def parse_duration(value: str) -> Optional[float]:
     5.0
     >>> parse_duration("2m")
     120.0
+    >>> parse_duration("1d")
+    86400.0
     >>> parse_duration("1m30s")
     90.0
     >>> parse_duration("1.5s")
@@ -42,13 +45,14 @@ def parse_duration(value: str) -> Optional[float]:
         pass
 
     match = _DURATION_RE.fullmatch(value)
-    if not match or not any(match.group(g) for g in ("hours", "minutes", "seconds")):
+    if not match or not any(match.group(g) for g in ("days", "hours", "minutes", "seconds")):
         return None
 
+    days = float(match.group("days") or 0)
     hours = float(match.group("hours") or 0)
     minutes = float(match.group("minutes") or 0)
     seconds = float(match.group("seconds") or 0)
-    return hours * 3600 + minutes * 60 + seconds
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def format_duration(seconds: float) -> str:
@@ -65,10 +69,13 @@ def format_duration(seconds: float) -> str:
     '5s'
     """
     total = int(seconds)
-    h, remainder = divmod(total, 3600)
+    d, remainder = divmod(total, 86400)
+    h, remainder = divmod(remainder, 3600)
     m, s = divmod(remainder, 60)
 
     parts: list[str] = []
+    if d:
+        parts.append(f"{d}d")
     if h:
         parts.append(f"{h}h")
     if m:

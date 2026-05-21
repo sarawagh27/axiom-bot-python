@@ -1,41 +1,27 @@
-"""
-services/operational_events.py - durable operational telemetry.
+"""Durable operational telemetry emitters.
 
-This is the shared event spine for health scoring, anomaly detection,
-analytics exports, and future dashboard views.
+The canonical event contract lives in :mod:`core.telemetry`. This module keeps
+the existing service-level recorder API used by cogs while emitting validated,
+schema-versioned events.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any, Optional
+
+from core.telemetry import EventName, EventSeverity, TelemetryEvent
 
 log = logging.getLogger("axiom.operations")
 
 
-class OperationalEventSeverity:
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
+class OperationalEventSeverity(EventSeverity):
+    """Compatibility alias for older imports."""
 
 
-class OperationalEventType:
-    ADMIN_ACTION = "admin_action"
-    BOT_LIFECYCLE = "bot_lifecycle"
-    COMMAND_ERROR = "command_error"
-    COMMAND_RATE_LIMITED = "command_rate_limited"
-    COMMAND_REJECTED = "command_rejected"
-    COMMAND_USED = "command_used"
-    GUILD_JOINED = "guild_joined"
-    GUILD_REMOVED = "guild_removed"
-    SESSION_COMPLETED = "session_completed"
-    SESSION_ENDED = "session_ended"
-    SESSION_PING = "session_ping"
-    SESSION_STARTED = "session_started"
-    SESSION_STOPPED = "session_stopped"
+class OperationalEventType(EventName):
+    """Compatibility alias for older imports."""
 
 
 _SESSION_EVENT_MAP = {
@@ -62,33 +48,32 @@ class OperationalEventRecorder:
         command: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> None:
-        payload = {
-            "ts": time.time(),
-            "event_type": event_type,
-            "severity": severity,
-            "source": source,
-            "guild_id": guild_id,
-            "user_id": user_id,
-            "target_id": target_id,
-            "command": command,
-            "metadata": metadata or {},
-        }
+        event = TelemetryEvent(
+            event_name=event_type,
+            source=source,
+            severity=severity,
+            guild_id=guild_id,
+            user_id=user_id,
+            target_id=target_id,
+            command=command,
+            metadata=metadata or {},
+        )
 
-        log.info(json.dumps(payload, default=str, sort_keys=True))
+        log.info(json.dumps(event.to_dict(), default=str, sort_keys=True))
 
         try:
             from core.database import db
 
             db.record_operational_event(
-                event_type=event_type,
-                severity=severity,
-                source=source,
-                guild_id=guild_id,
-                user_id=user_id,
-                target_id=target_id,
-                command=command,
-                metadata=metadata,
-                timestamp=payload["ts"],
+                event_type=event.event_name,
+                severity=event.severity,
+                source=event.source,
+                guild_id=event.guild_id,
+                user_id=event.user_id,
+                target_id=event.target_id,
+                command=event.command,
+                metadata=event.metadata,
+                timestamp=event.timestamp,
             )
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("axiom.operations").error(

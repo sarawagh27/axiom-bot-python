@@ -6,6 +6,7 @@ os.environ.setdefault("DISCORD_TOKEN", "test-token")
 
 from core.database import db  # noqa: E402
 from core.server_health import server_health_analyzer  # noqa: E402
+from core.telemetry import EventName  # noqa: E402
 from services.operational_events import (  # noqa: E402
     OperationalEventType,
     operational_event_recorder,
@@ -36,7 +37,7 @@ class OperationalHealthTest(unittest.TestCase):
         summary = db.get_operational_event_summary(guild_id=123, window_seconds=60)
 
         self.assertEqual(summary["total_events"], 1)
-        self.assertEqual(summary["event_counts"]["command_used"], 1)
+        self.assertEqual(summary["event_counts"][EventName.COMMAND_USED], 1)
         self.assertEqual(summary["severity_counts"]["info"], 1)
 
     def test_health_score_degrades_on_errors_and_warnings(self) -> None:

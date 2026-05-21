@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.session_manager import session_manager
-from services.operational_events import OperationalEventType
+from core.telemetry import EventName
 
 
 @dataclass(frozen=True)
@@ -70,9 +70,9 @@ class ServerHealthAnalyzer:
         score -= min(severity_counts.get("critical", 0) * 30, 60)
         score -= min(severity_counts.get("error", 0) * 12, 48)
         score -= min(severity_counts.get("warning", 0) * 4, 24)
-        score -= min(event_counts.get(OperationalEventType.COMMAND_RATE_LIMITED, 0) * 3, 24)
-        score -= min(event_counts.get(OperationalEventType.SESSION_STOPPED, 0) * 5, 20)
-        score -= min(event_counts.get(OperationalEventType.COMMAND_ERROR, 0) * 8, 32)
+        score -= min(event_counts.get(EventName.COMMAND_RATE_LIMITED, 0) * 3, 24)
+        score -= min(event_counts.get(EventName.SESSION_STOPPED, 0) * 5, 20)
+        score -= min(event_counts.get(EventName.COMMAND_ERROR, 0) * 8, 32)
         return max(0, min(100, score))
 
     def _status(self, score: int) -> str:
@@ -100,10 +100,10 @@ class ServerHealthAnalyzer:
             signals.append(f"{severity_counts['error']} command/runtime error event(s).")
         if severity_counts.get("warning", 0):
             signals.append(f"{severity_counts['warning']} warning event(s), mostly policy or permission friction.")
-        if event_counts.get(OperationalEventType.COMMAND_RATE_LIMITED, 0):
-            signals.append(f"{event_counts[OperationalEventType.COMMAND_RATE_LIMITED]} rate-limit event(s).")
-        if event_counts.get(OperationalEventType.SESSION_STARTED, 0):
-            signals.append(f"{event_counts[OperationalEventType.SESSION_STARTED]} session(s) started.")
+        if event_counts.get(EventName.COMMAND_RATE_LIMITED, 0):
+            signals.append(f"{event_counts[EventName.COMMAND_RATE_LIMITED]} rate-limit event(s).")
+        if event_counts.get(EventName.SESSION_STARTED, 0):
+            signals.append(f"{event_counts[EventName.SESSION_STARTED]} session(s) started.")
         if active_sessions:
             signals.append(f"{active_sessions} session(s) currently active.")
         if not signals and score >= 90:

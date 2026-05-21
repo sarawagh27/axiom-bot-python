@@ -14,6 +14,8 @@ import time
 from typing import Any, Optional
 
 from config import CONFIG
+from core.telemetry import EventName, EventSeverity, TelemetryEvent
+from core.telemetry.events import legacy_aliases_for
 
 log = logging.getLogger("axiom.database")
 
@@ -80,7 +82,8 @@ class Database:
                 target_id    INTEGER,
                 command      TEXT,
                 metadata     TEXT    NOT NULL DEFAULT '{}',
-                timestamp    REAL    NOT NULL DEFAULT (unixepoch())
+                timestamp    REAL    NOT NULL DEFAULT (unixepoch()),
+                schema_version INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE INDEX IF NOT EXISTS idx_operational_events_guild_time
@@ -91,8 +94,77 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_operational_events_severity_time
                 ON operational_events (severity, timestamp);
+
+            CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                anomaly_type TEXT NOT NULL,
+                event_type TEXT,
+                actor_id INTEGER,
+                target_id INTEGER,
+                command TEXT,
+                count INTEGER NOT NULL,
+                threshold INTEGER NOT NULL,
+                first_seen_ts REAL NOT NULL,
+                last_seen_ts REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                acknowledged_at REAL,
+                resolved_at REAL
+            );
+
+            DROP INDEX IF EXISTS idx_incidents_active_fingerprint;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_active_fingerprint
+                ON incidents (guild_id, fingerprint)
+                WHERE status IN ('open', 'acknowledged');
+
+            CREATE INDEX IF NOT EXISTS idx_incidents_guild_status
+                ON incidents (guild_id, status, updated_at);
+
+            CREATE TABLE IF NOT EXISTS incident_timeline (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                timestamp REAL NOT NULL,
+                FOREIGN KEY (incident_id) REFERENCES incidents (incident_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_incident_timeline_incident_time
+                ON incident_timeline (incident_id, timestamp);
+
+            CREATE TABLE IF NOT EXISTS incident_event_links (
+                incident_id TEXT NOT NULL,
+                event_id INTEGER NOT NULL,
+                linked_at REAL NOT NULL,
+                PRIMARY KEY (incident_id, event_id),
+                FOREIGN KEY (incident_id) REFERENCES incidents (incident_id),
+                FOREIGN KEY (event_id) REFERENCES operational_events (id)
+            );
         """)
+        self._ensure_operational_events_schema()
         self._conn.commit()
+
+    def _ensure_operational_events_schema(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(operational_events)").fetchall()
+        }
+        if "schema_version" not in columns:
+            self._conn.execute(
+                "ALTER TABLE operational_events "
+                "ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
+            )
 
     # ------------------------------------------------------------------
     # Guild Config
@@ -173,8 +245,8 @@ class Database:
         """, (guild_id, user_id, command, target_id, count))
         self._conn.commit()
         self.record_operational_event(
-            event_type="command_used",
-            severity="info",
+            event_type=EventName.COMMAND_USED,
+            severity=EventSeverity.INFO,
             source="usage_stats",
             guild_id=guild_id,
             user_id=user_id,
@@ -253,23 +325,24 @@ class Database:
         timestamp: Optional[float] = None,
     ) -> None:
         """Persist a structured operational event for analytics and health scoring."""
+        event = TelemetryEvent(
+            event_name=event_type,
+            severity=severity,
+            source=source,
+            guild_id=guild_id,
+            user_id=user_id,
+            target_id=target_id,
+            command=command,
+            metadata=metadata or {},
+            timestamp=timestamp or time.time(),
+        )
         self._conn.execute("""
             INSERT INTO operational_events (
                 guild_id, event_type, severity, source, user_id, target_id,
-                command, metadata, timestamp
+                command, metadata, timestamp, schema_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            guild_id,
-            event_type,
-            severity,
-            source,
-            user_id,
-            target_id,
-            command,
-            json.dumps(metadata or {}, default=str, sort_keys=True),
-            timestamp or time.time(),
-        ))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, event.to_storage_tuple())
         self._conn.commit()
 
     def get_operational_event_summary(
@@ -278,44 +351,21 @@ class Database:
         window_seconds: int = 3600,
     ) -> dict[str, Any]:
         """Return aggregate operational events for a guild over a recent window."""
-        since = time.time() - window_seconds
-        base_params = (guild_id, since)
-
-        total_row = self._conn.execute("""
-            SELECT
-                COUNT(*) as total_events,
-                COUNT(DISTINCT user_id) as unique_users,
-                MAX(timestamp) as last_event_ts
-            FROM operational_events
-            WHERE guild_id = ? AND timestamp >= ?
-        """, base_params).fetchone()
-
-        severity_rows = self._conn.execute("""
-            SELECT severity, COUNT(*) as count
-            FROM operational_events
-            WHERE guild_id = ? AND timestamp >= ?
-            GROUP BY severity
-        """, base_params).fetchall()
-
-        event_rows = self._conn.execute("""
-            SELECT event_type, COUNT(*) as count
-            FROM operational_events
-            WHERE guild_id = ? AND timestamp >= ?
-            GROUP BY event_type
-            ORDER BY count DESC, event_type ASC
-        """, base_params).fetchall()
+        events = self.get_operational_events(guild_id, window_seconds)
+        unique_users = {event["user_id"] for event in events if event["user_id"] is not None}
+        severity_counts: dict[str, int] = {}
+        event_counts: dict[str, int] = {}
+        for event in events:
+            severity_counts[event["severity"]] = severity_counts.get(event["severity"], 0) + 1
+            event_counts[event["event_type"]] = event_counts.get(event["event_type"], 0) + 1
 
         return {
             "window_seconds": window_seconds,
-            "total_events": total_row["total_events"] or 0,
-            "unique_users": total_row["unique_users"] or 0,
-            "last_event_ts": total_row["last_event_ts"],
-            "severity_counts": {
-                row["severity"]: row["count"] for row in severity_rows
-            },
-            "event_counts": {
-                row["event_type"]: row["count"] for row in event_rows
-            },
+            "total_events": len(events),
+            "unique_users": len(unique_users),
+            "last_event_ts": max((event["timestamp"] for event in events), default=None),
+            "severity_counts": severity_counts,
+            "event_counts": dict(sorted(event_counts.items(), key=lambda item: (-item[1], item[0]))),
         }
 
     def get_recent_operational_events(
@@ -325,27 +375,14 @@ class Database:
     ) -> list[dict[str, Any]]:
         rows = self._conn.execute("""
             SELECT id, event_type, severity, source, user_id, target_id, command,
-                   metadata, timestamp
+                   metadata, timestamp, schema_version
             FROM operational_events
             WHERE guild_id = ?
             ORDER BY timestamp DESC
             LIMIT ?
         """, (guild_id, limit)).fetchall()
 
-        return [
-            {
-                "id": row["id"],
-                "event_type": row["event_type"],
-                "severity": row["severity"],
-                "source": row["source"],
-                "user_id": row["user_id"],
-                "target_id": row["target_id"],
-                "command": row["command"],
-                "metadata": json.loads(row["metadata"]),
-                "timestamp": row["timestamp"],
-            }
-            for row in rows
-        ]
+        return [self._event_row_to_dict(row) for row in rows]
 
     def get_operational_events(
         self,
@@ -353,38 +390,28 @@ class Database:
         window_seconds: int = 3600,
         event_types: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
-        """Return raw operational events for analyzers and dashboards."""
+        """Return raw operational events for analyzers and reports."""
         since = time.time() - window_seconds
         params: list[Any] = [guild_id, since]
         event_filter = ""
 
         if event_types:
-            placeholders = ", ".join("?" for _ in event_types)
+            expanded_event_types: list[str] = []
+            for event_type in event_types:
+                expanded_event_types.extend(sorted(legacy_aliases_for(event_type)))
+            placeholders = ", ".join("?" for _ in expanded_event_types)
             event_filter = f" AND event_type IN ({placeholders})"
-            params.extend(event_types)
+            params.extend(expanded_event_types)
 
         rows = self._conn.execute(f"""
             SELECT id, event_type, severity, source, user_id, target_id, command,
-                   metadata, timestamp
+                   metadata, timestamp, schema_version
             FROM operational_events
             WHERE guild_id = ? AND timestamp >= ?{event_filter}
             ORDER BY timestamp ASC
         """, params).fetchall()
 
-        return [
-            {
-                "id": row["id"],
-                "event_type": row["event_type"],
-                "severity": row["severity"],
-                "source": row["source"],
-                "user_id": row["user_id"],
-                "target_id": row["target_id"],
-                "command": row["command"],
-                "metadata": json.loads(row["metadata"]),
-                "timestamp": row["timestamp"],
-            }
-            for row in rows
-        ]
+        return [self._event_row_to_dict(row) for row in rows]
 
     def get_operational_events_after(
         self,
@@ -395,27 +422,14 @@ class Database:
         """Return operational events newer than a cursor ID."""
         rows = self._conn.execute("""
             SELECT id, event_type, severity, source, user_id, target_id, command,
-                   metadata, timestamp
+                   metadata, timestamp, schema_version
             FROM operational_events
             WHERE guild_id = ? AND id > ?
             ORDER BY id ASC
             LIMIT ?
         """, (guild_id, after_id, limit)).fetchall()
 
-        return [
-            {
-                "id": row["id"],
-                "event_type": row["event_type"],
-                "severity": row["severity"],
-                "source": row["source"],
-                "user_id": row["user_id"],
-                "target_id": row["target_id"],
-                "command": row["command"],
-                "metadata": json.loads(row["metadata"]),
-                "timestamp": row["timestamp"],
-            }
-            for row in rows
-        ]
+        return [self._event_row_to_dict(row) for row in rows]
 
     def get_latest_operational_event_id(self, guild_id: int) -> int:
         row = self._conn.execute("""
@@ -463,11 +477,247 @@ class Database:
             for row in rows
         ]
 
+    # ------------------------------------------------------------------
+    # Incidents
+    # ------------------------------------------------------------------
+
+    def create_incident(
+        self,
+        incident_id: str,
+        guild_id: int,
+        fingerprint: str,
+        severity: str,
+        status: str,
+        title: str,
+        description: str,
+        anomaly_type: str,
+        event_type: Optional[str],
+        actor_id: Optional[int],
+        target_id: Optional[int],
+        command: Optional[str],
+        count: int,
+        threshold: int,
+        first_seen_ts: float,
+        last_seen_ts: float,
+    ) -> dict[str, Any]:
+        now = time.time()
+        self._conn.execute("""
+            INSERT INTO incidents (
+                incident_id, guild_id, fingerprint, severity, status, title,
+                description, anomaly_type, event_type, actor_id, target_id,
+                command, count, threshold, first_seen_ts, last_seen_ts,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            incident_id,
+            guild_id,
+            fingerprint,
+            severity,
+            status,
+            title,
+            description,
+            anomaly_type,
+            event_type,
+            actor_id,
+            target_id,
+            command,
+            count,
+            threshold,
+            first_seen_ts,
+            last_seen_ts,
+            now,
+            now,
+        ))
+        self._conn.commit()
+        return self.get_incident(incident_id)
+
+    def get_incident(self, incident_id: str) -> dict[str, Any]:
+        row = self._conn.execute("""
+            SELECT *
+            FROM incidents
+            WHERE incident_id = ?
+        """, (incident_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown incident: {incident_id}")
+        return self._incident_row_to_dict(row)
+
+    def get_active_incident_by_fingerprint(
+        self,
+        guild_id: int,
+        fingerprint: str,
+    ) -> Optional[dict[str, Any]]:
+        row = self._conn.execute("""
+            SELECT *
+            FROM incidents
+            WHERE guild_id = ?
+              AND fingerprint = ?
+              AND status IN ('open', 'acknowledged')
+            ORDER BY updated_at DESC
+            LIMIT 1
+        """, (guild_id, fingerprint)).fetchone()
+        if row is None:
+            return None
+        return self._incident_row_to_dict(row)
+
+    def update_incident_observation(
+        self,
+        incident_id: str,
+        severity: str,
+        count: int,
+        last_seen_ts: float,
+    ) -> dict[str, Any]:
+        self._conn.execute("""
+            UPDATE incidents
+            SET severity = ?,
+                count = ?,
+                last_seen_ts = ?,
+                updated_at = ?
+            WHERE incident_id = ?
+        """, (severity, count, last_seen_ts, time.time(), incident_id))
+        self._conn.commit()
+        return self.get_incident(incident_id)
+
+    def update_incident_status(
+        self,
+        incident_id: str,
+        status: str,
+        timestamp: float,
+    ) -> dict[str, Any]:
+        fields = ["status = ?", "updated_at = ?"]
+        params: list[Any] = [status, timestamp]
+        if status == "acknowledged":
+            fields.append("acknowledged_at = ?")
+            params.append(timestamp)
+        if status == "resolved":
+            fields.append("resolved_at = ?")
+            params.append(timestamp)
+        params.append(incident_id)
+        self._conn.execute(f"""
+            UPDATE incidents
+            SET {", ".join(fields)}
+            WHERE incident_id = ?
+        """, params)
+        self._conn.commit()
+        return self.get_incident(incident_id)
+
+    def list_incidents(
+        self,
+        guild_id: int,
+        statuses: Optional[list[str]] = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [guild_id]
+        status_filter = ""
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            status_filter = f" AND status IN ({placeholders})"
+            params.extend(statuses)
+        params.append(limit)
+        rows = self._conn.execute(f"""
+            SELECT *
+            FROM incidents
+            WHERE guild_id = ?{status_filter}
+            ORDER BY
+                CASE severity
+                    WHEN 'critical' THEN 4
+                    WHEN 'high' THEN 3
+                    WHEN 'medium' THEN 2
+                    ELSE 1
+                END DESC,
+                updated_at DESC
+            LIMIT ?
+        """, params).fetchall()
+        return [self._incident_row_to_dict(row) for row in rows]
+
+    def add_incident_timeline_event(
+        self,
+        incident_id: str,
+        guild_id: int,
+        event_type: str,
+        severity: str,
+        title: str,
+        description: str,
+        metadata: Optional[dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+    ) -> dict[str, Any]:
+        self._conn.execute("""
+            INSERT INTO incident_timeline (
+                incident_id, guild_id, event_type, severity, title,
+                description, metadata, timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            incident_id,
+            guild_id,
+            event_type,
+            severity,
+            title,
+            description,
+            json.dumps(metadata or {}, default=str, sort_keys=True),
+            timestamp or time.time(),
+        ))
+        self._conn.commit()
+        row = self._conn.execute("""
+            SELECT *
+            FROM incident_timeline
+            WHERE id = last_insert_rowid()
+        """).fetchone()
+        return self._incident_timeline_row_to_dict(row)
+
+    def get_incident_timeline(
+        self,
+        incident_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT *
+            FROM incident_timeline
+            WHERE incident_id = ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+        """, (incident_id, limit)).fetchall()
+        return [self._incident_timeline_row_to_dict(row) for row in rows]
+
+    def link_incident_event(self, incident_id: str, event_id: int) -> bool:
+        cursor = self._conn.execute("""
+            INSERT OR IGNORE INTO incident_event_links (incident_id, event_id, linked_at)
+            VALUES (?, ?, ?)
+        """, (incident_id, event_id, time.time()))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def list_incident_event_links(self, incident_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT incident_id, event_id, linked_at
+            FROM incident_event_links
+            WHERE incident_id = ?
+            ORDER BY linked_at ASC
+        """, (incident_id,)).fetchall()
+        return [dict(row) for row in rows]
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
             self._conn = None
             log.info("Database connection closed.")
+
+    def _event_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return TelemetryEvent.from_record(row).to_dict()
+
+    def _incident_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        incident = dict(row)
+        incident["timeline"] = self.get_incident_timeline(incident["incident_id"], limit=10)
+        incident["linked_event_ids"] = [
+            link["event_id"]
+            for link in self.list_incident_event_links(incident["incident_id"])
+        ]
+        return incident
+
+    def _incident_timeline_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["metadata"] = json.loads(item["metadata"])
+        return item
 
 
 # Module-level singleton

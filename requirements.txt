@@ -1,5 +1,4 @@
 discord.py==2.3.2
 python-dotenv==1.0.0
 aiofiles==23.2.1
-flask==3.0.3
 audioop-lts; python_version >= "3.13"

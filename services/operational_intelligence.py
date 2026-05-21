@@ -1,9 +1,4 @@
-"""
-services/dashboard_data.py - data model for the operational dashboard.
-
-Flask routes, future APIs, and dashboard jobs should consume this service
-instead of duplicating telemetry queries.
-"""
+"""Operational intelligence snapshots for Discord-facing monitoring UX."""
 
 from __future__ import annotations
 
@@ -13,8 +8,9 @@ from collections import Counter
 from typing import Any
 
 from core.anomaly_detection import anomaly_detector
+from core.incidents import incident_service
 from core.server_health import server_health_analyzer
-from services.operational_events import OperationalEventType
+from core.telemetry import EventName
 
 
 DEFAULT_WINDOW_SECONDS = 3600
@@ -36,8 +32,8 @@ def _status_label(status: str) -> str:
     }.get(status, "UNKNOWN")
 
 
-class DashboardDataService:
-    """Builds JSON-ready operational intelligence snapshots."""
+class OperationalIntelligenceService:
+    """Builds reusable operational intelligence snapshots from telemetry."""
 
     def observed_guild_ids(self) -> list[int]:
         from core.database import db
@@ -68,6 +64,7 @@ class DashboardDataService:
         events = self.events(resolved_guild_id, limit=event_limit)
         analytics = self.analytics(resolved_guild_id, window_seconds)
         live_metrics = self.live_metrics(resolved_guild_id)
+        incidents = self.incidents(resolved_guild_id, window_seconds)
         timeline = self.timeline(resolved_guild_id, window_seconds)
 
         return {
@@ -79,6 +76,7 @@ class DashboardDataService:
             "events": events,
             "analytics": analytics,
             "live_metrics": live_metrics,
+            "incidents": incidents,
             "timeline": timeline,
             "guild_ids": self.observed_guild_ids(),
         }
@@ -107,7 +105,7 @@ class DashboardDataService:
             "signals": snapshot.signals,
             "factors": {
                 "rate_limit_pressure": event_counts.get(
-                    OperationalEventType.COMMAND_RATE_LIMITED,
+                    EventName.COMMAND_RATE_LIMITED,
                     0,
                 ),
                 "anomaly_count": len(anomaly_report.signals),
@@ -124,6 +122,7 @@ class DashboardDataService:
         window_seconds: int = DEFAULT_WINDOW_SECONDS,
     ) -> dict[str, Any]:
         report = anomaly_detector.detect(guild_id, window_seconds)
+        incident_service.reconcile_anomalies(report)
         counts_by_type = Counter(signal.anomaly_type for signal in report.signals)
         counts_by_severity = Counter(signal.severity for signal in report.signals)
 
@@ -132,6 +131,11 @@ class DashboardDataService:
             "counts_by_type": dict(counts_by_type),
             "counts_by_severity": dict(counts_by_severity),
         }
+
+    def incidents(self, guild_id: int, window_seconds: int = DEFAULT_WINDOW_SECONDS) -> dict[str, Any]:
+        report = anomaly_detector.detect(guild_id, window_seconds)
+        incident_service.reconcile_anomalies(report)
+        return incident_service.active_snapshot(guild_id)
 
     def events(self, guild_id: int, limit: int = DEFAULT_EVENT_LIMIT) -> list[dict[str, Any]]:
         from core.database import db
@@ -152,13 +156,13 @@ class DashboardDataService:
 
         for event in events:
             label = _bucket_label(event["timestamp"], bucket_seconds)
-            if event["event_type"] == OperationalEventType.COMMAND_USED:
+            if event["event_type"] == EventName.COMMAND_USED:
                 command_buckets[label] += 1
             if event["event_type"] in {
-                OperationalEventType.COMMAND_ERROR,
-                OperationalEventType.COMMAND_RATE_LIMITED,
-                OperationalEventType.COMMAND_REJECTED,
-                OperationalEventType.SESSION_STOPPED,
+                EventName.COMMAND_ERROR,
+                EventName.COMMAND_RATE_LIMITED,
+                EventName.COMMAND_REJECTED,
+                EventName.SESSION_STOPPED,
             }:
                 anomaly_buckets[label] += 1
 
@@ -166,7 +170,7 @@ class DashboardDataService:
         cooldown_triggers = sum(
             1
             for event in events
-            if event["event_type"] == OperationalEventType.COMMAND_REJECTED
+            if event["event_type"] == EventName.COMMAND_REJECTED
             and event["metadata"].get("reason") == "cooldown"
         )
 
@@ -175,49 +179,23 @@ class DashboardDataService:
             "anomalies_per_hour": self._series(anomaly_buckets),
             "top_commands": db.get_command_usage_summary(guild_id, window_seconds),
             "ping_session_frequency": event_counts.get(
-                OperationalEventType.SESSION_STARTED,
+                EventName.SESSION_STARTED,
                 0,
             ),
             "ping_delivery_events": event_counts.get(
-                OperationalEventType.SESSION_PING,
+                EventName.SESSION_PING,
                 0,
             ),
             "cooldown_trigger_count": cooldown_triggers,
             "rate_limit_count": event_counts.get(
-                OperationalEventType.COMMAND_RATE_LIMITED,
+                EventName.COMMAND_RATE_LIMITED,
                 0,
             ),
             "command_error_count": event_counts.get(
-                OperationalEventType.COMMAND_ERROR,
+                EventName.COMMAND_ERROR,
                 0,
             ),
         }
-
-    def live_snapshot(
-        self,
-        guild_id: int | None = None,
-        window_seconds: int = DEFAULT_WINDOW_SECONDS,
-        event_limit: int = DEFAULT_EVENT_LIMIT,
-        after_id: int = 0,
-    ) -> dict[str, Any]:
-        resolved_guild_id = self.resolve_guild_id(guild_id)
-        if resolved_guild_id is None:
-            overview = self._empty_overview(window_seconds)
-            overview["new_events"] = []
-            overview["latest_event_id"] = 0
-            return overview
-
-        overview = self.overview(resolved_guild_id, window_seconds, event_limit)
-        from core.database import db
-
-        new_events = db.get_operational_events_after(
-            resolved_guild_id,
-            after_id=after_id,
-            limit=event_limit,
-        )
-        overview["new_events"] = new_events
-        overview["latest_event_id"] = db.get_latest_operational_event_id(resolved_guild_id)
-        return overview
 
     def live_metrics(
         self,
@@ -232,20 +210,20 @@ class DashboardDataService:
         cooldown_abuse = sum(
             1
             for event in events
-            if event["event_type"] == OperationalEventType.COMMAND_REJECTED
+            if event["event_type"] == EventName.COMMAND_REJECTED
             and event["metadata"].get("reason") == "cooldown"
         )
         anomaly_pressure = sum(
             event_counts.get(event_type, 0)
             for event_type in (
-                OperationalEventType.COMMAND_ERROR,
-                OperationalEventType.COMMAND_RATE_LIMITED,
-                OperationalEventType.COMMAND_REJECTED,
-                OperationalEventType.SESSION_STOPPED,
+                EventName.COMMAND_ERROR,
+                EventName.COMMAND_RATE_LIMITED,
+                EventName.COMMAND_REJECTED,
+                EventName.SESSION_STOPPED,
             )
         )
         error_spikes = severity_counts.get("error", 0) + severity_counts.get("critical", 0)
-        command_throughput = event_counts.get(OperationalEventType.COMMAND_USED, 0)
+        command_throughput = event_counts.get(EventName.COMMAND_USED, 0)
 
         degradation_penalty = min(
             45,
@@ -263,7 +241,7 @@ class DashboardDataService:
             "command_throughput": command_throughput,
             "error_spikes": error_spikes,
             "rate_limit_pressure": event_counts.get(
-                OperationalEventType.COMMAND_RATE_LIMITED,
+                EventName.COMMAND_RATE_LIMITED,
                 0,
             ),
             "degradation_penalty": degradation_penalty,
@@ -305,6 +283,32 @@ class DashboardDataService:
             }
             for signal in anomaly_report.signals
         )
+        for incident in incident_service.active_incidents(guild_id, limit=8):
+            items.append({
+                "kind": "incident",
+                "timestamp": incident["updated_at"],
+                "severity": incident["severity"],
+                "title": incident["title"],
+                "description": f"{incident['status']} incident {incident['incident_id']}",
+                "context": {
+                    "incident_id": incident["incident_id"],
+                    "status": incident["status"],
+                    "anomaly_type": incident["anomaly_type"],
+                    "linked_event_ids": incident["linked_event_ids"],
+                },
+            })
+            for entry in incident["timeline"][:3]:
+                items.append({
+                    "kind": "incident_timeline",
+                    "timestamp": entry["timestamp"],
+                    "severity": entry["severity"],
+                    "title": entry["title"],
+                    "description": entry["description"],
+                    "context": {
+                        "incident_id": entry["incident_id"],
+                        "event_type": entry["event_type"],
+                    },
+                })
 
         return sorted(items, key=lambda item: item["timestamp"], reverse=True)[:limit]
 
@@ -387,6 +391,11 @@ class DashboardDataService:
                 "rate_limit_count": 0,
                 "command_error_count": 0,
             },
+            "incidents": {
+                "active": [],
+                "active_count": 0,
+                "highest_severity": "none",
+            },
             "live_metrics": {
                 "window_seconds": LIVE_WINDOW_SECONDS,
                 "active_sessions": 0,
@@ -398,10 +407,8 @@ class DashboardDataService:
                 "degradation_penalty": 0,
             },
             "timeline": [],
-            "new_events": [],
-            "latest_event_id": 0,
             "guild_ids": [],
         }
 
 
-dashboard_data_service = DashboardDataService()
+operational_intelligence_service = OperationalIntelligenceService()
