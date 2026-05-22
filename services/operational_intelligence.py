@@ -22,6 +22,7 @@ PRESSURE_EVENTS = {
     EventName.COMMAND_REJECTED,
     EventName.SESSION_STOPPED,
 }
+SEVERITY_WEIGHTS = {"none": 0, "low": 8, "medium": 18, "high": 34, "critical": 50}
 
 
 def _bucket_label(timestamp: float, bucket_seconds: int) -> str:
@@ -74,6 +75,15 @@ class OperationalIntelligenceService:
         timeline = self.timeline(resolved_guild_id, window_seconds)
         trend = self.trend(resolved_guild_id, window_seconds)
         command_intelligence = self.command_intelligence(resolved_guild_id, window_seconds)
+        anomaly_memory = self.anomaly_memory(resolved_guild_id, anomalies["signals"])
+        pressure = self.pressure_score(
+            health=health,
+            anomalies=anomalies,
+            incidents=incidents,
+            live_metrics=live_metrics,
+            trend=trend,
+            anomaly_memory=anomaly_memory,
+        )
         recommendations = self.recommendations(
             health=health,
             anomalies=anomalies,
@@ -81,6 +91,8 @@ class OperationalIntelligenceService:
             analytics=analytics,
             trend=trend,
             command_intelligence=command_intelligence,
+            anomaly_memory=anomaly_memory,
+            pressure=pressure,
         )
 
         return {
@@ -96,6 +108,8 @@ class OperationalIntelligenceService:
             "timeline": timeline,
             "trend": trend,
             "command_intelligence": command_intelligence,
+            "anomaly_memory": anomaly_memory,
+            "pressure": pressure,
             "recommendations": recommendations,
             "guild_ids": self.observed_guild_ids(),
         }
@@ -329,9 +343,121 @@ class OperationalIntelligenceService:
                     "pressure_events": count,
                     "cooldown_hits": cooldowns_by_actor.get(user_id, 0),
                     "rate_limits": rate_limits_by_actor.get(user_id, 0),
+                    "explanation": self._actor_pressure_explanation(
+                        count,
+                        cooldowns_by_actor.get(user_id, 0),
+                        rate_limits_by_actor.get(user_id, 0),
+                    ),
                 }
                 for user_id, count in pressure_by_actor.most_common(5)
             ],
+        }
+
+    def anomaly_memory(
+        self,
+        guild_id: int,
+        signals: list[dict[str, Any]],
+        limit: int = 80,
+    ) -> dict[str, Any]:
+        from core.anomaly_detection import AnomalySignal
+        from core.database import db
+
+        incidents = db.list_incidents(
+            guild_id,
+            statuses=["open", "acknowledged", "resolved"],
+            limit=limit,
+        )
+        by_fingerprint: dict[str, list[dict[str, Any]]] = {}
+        for incident in incidents:
+            by_fingerprint.setdefault(incident["fingerprint"], []).append(incident)
+
+        recurring_signals: list[dict[str, Any]] = []
+        for raw_signal in signals:
+            signal = AnomalySignal(**raw_signal)
+            fingerprint = incident_service.fingerprint_for_signal(signal)
+            matches = by_fingerprint.get(fingerprint, [])
+            if len(matches) < 2:
+                continue
+            recurring_signals.append({
+                "fingerprint": fingerprint,
+                "title": raw_signal["title"],
+                "anomaly_type": raw_signal["anomaly_type"],
+                "severity": raw_signal["severity"],
+                "occurrences": len(matches),
+                "resolved_occurrences": sum(
+                    1 for incident in matches if incident["status"] == "resolved"
+                ),
+                "last_seen_ts": max(incident["last_seen_ts"] for incident in matches),
+            })
+
+        recurring_incidents = [
+            {
+                "fingerprint": fingerprint,
+                "title": matches[0]["title"],
+                "anomaly_type": matches[0]["anomaly_type"],
+                "occurrences": len(matches),
+                "active": sum(1 for incident in matches if incident["status"] != "resolved"),
+                "last_seen_ts": max(incident["last_seen_ts"] for incident in matches),
+            }
+            for fingerprint, matches in by_fingerprint.items()
+            if len(matches) >= 2
+        ]
+
+        recurring_incidents.sort(key=lambda item: (-item["occurrences"], -item["last_seen_ts"]))
+        recurring_signals.sort(key=lambda item: (-item["occurrences"], -item["last_seen_ts"]))
+        return {
+            "recurring_signals": recurring_signals[:5],
+            "recurring_incidents": recurring_incidents[:5],
+            "incident_fingerprint_count": len(by_fingerprint),
+        }
+
+    def pressure_score(
+        self,
+        *,
+        health: dict[str, Any],
+        anomalies: dict[str, Any],
+        incidents: dict[str, Any],
+        live_metrics: dict[str, Any],
+        trend: dict[str, Any],
+        anomaly_memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        anomaly_pressure = sum(
+            SEVERITY_WEIGHTS.get(signal["severity"], 0)
+            for signal in anomalies.get("signals", [])
+        )
+        incident_pressure = min(30, incidents.get("active_count", 0) * 10)
+        trend_pressure = 0
+        if trend["deltas"]["errors"] > 0:
+            trend_pressure += min(18, trend["deltas"]["errors"] * 6)
+        if trend["deltas"]["rate_limits"] > 0:
+            trend_pressure += min(12, trend["deltas"]["rate_limits"] * 3)
+        live_pressure = min(24, live_metrics.get("anomaly_pressure", 0) * 3)
+        recurrence_pressure = min(
+            15,
+            len(anomaly_memory.get("recurring_signals", [])) * 5
+            + len(anomaly_memory.get("recurring_incidents", [])) * 3,
+        )
+        health_pressure = max(0, 100 - health["score"]) // 3
+        score = min(
+            100,
+            anomaly_pressure
+            + incident_pressure
+            + trend_pressure
+            + live_pressure
+            + recurrence_pressure
+            + health_pressure,
+        )
+        return {
+            "score": score,
+            "band": self._pressure_band(score),
+            "drivers": self._pressure_drivers(
+                anomaly_pressure=anomaly_pressure,
+                incident_pressure=incident_pressure,
+                trend_pressure=trend_pressure,
+                live_pressure=live_pressure,
+                recurrence_pressure=recurrence_pressure,
+                health_pressure=health_pressure,
+            ),
         }
 
     def recommendations(
@@ -343,6 +469,8 @@ class OperationalIntelligenceService:
         analytics: dict[str, Any],
         trend: dict[str, Any],
         command_intelligence: dict[str, Any],
+        anomaly_memory: dict[str, Any],
+        pressure: dict[str, Any],
     ) -> list[str]:
         recommendations: list[str] = []
         anomaly_types = {
@@ -350,6 +478,8 @@ class OperationalIntelligenceService:
             for signal in anomalies.get("signals", [])
         }
 
+        if pressure["score"] >= 80:
+            recommendations.append("Treat this as active ops pressure; stabilize incidents before new ping activity.")
         if incidents.get("active_count", 0):
             recommendations.append("Triage active incidents first; they already group related telemetry.")
         if "repeated_failures" in anomaly_types or trend["deltas"]["errors"] > 0:
@@ -361,6 +491,8 @@ class OperationalIntelligenceService:
         if command_intelligence.get("dominant_command"):
             command = command_intelligence["dominant_command"]["command"]
             recommendations.append(f"Audit `/{command}` usage; it dominates recent command traffic.")
+        if anomaly_memory.get("recurring_signals"):
+            recommendations.append("Treat recurring signals as a pattern, not a one-off; review prior incident context.")
         if health["active_sessions"]:
             recommendations.append("Confirm active sessions are intentional and stop any unnecessary session.")
         if not recommendations:
@@ -528,16 +660,16 @@ class OperationalIntelligenceService:
         )
 
         for metric, label in (
-            ("errors", "Errors"),
-            ("rate_limits", "Rate limits"),
+            ("errors", "Error pressure"),
+            ("rate_limits", "Rate-limit pressure"),
             ("rejections", "Rejected commands"),
-            ("sessions", "Ping sessions"),
-            ("commands", "Command usage"),
+            ("sessions", "Ping-session starts"),
+            ("commands", "Command volume"),
         ):
             delta = deltas.get(metric, 0)
             if delta:
-                direction = "increased" if delta > 0 else "decreased"
-                changes.append(f"{label} {direction} by {abs(delta)} vs the previous window.")
+                direction = "rose" if delta > 0 else "fell"
+                changes.append(f"{label} {direction} by {abs(delta)} compared with the prior window.")
 
         for command, count in current_commands.most_common(3):
             previous_count = previous_commands.get(command, 0)
@@ -545,8 +677,57 @@ class OperationalIntelligenceService:
                 changes.append(f"`/{command}` is up by {count - previous_count} use(s).")
 
         if not changes:
-            changes.append("No material movement from the previous window.")
+            changes.append("No material movement from the prior window.")
         return changes[:5]
+
+    def _actor_pressure_explanation(
+        self,
+        pressure_events: int,
+        cooldown_hits: int,
+        rate_limits: int,
+    ) -> str:
+        if rate_limits >= 3:
+            return "This looks like repeated protection-layer pressure."
+        if cooldown_hits >= 3:
+            return "This looks like repeated retries before cooldown expiry."
+        if pressure_events >= 3:
+            return "This actor is repeatedly associated with failed or rejected operations."
+        return "Low-volume pressure, worth correlating with recent commands."
+
+    def _pressure_band(self, score: int) -> str:
+        if score >= 80:
+            return "critical"
+        if score >= 60:
+            return "high"
+        if score >= 35:
+            return "medium"
+        if score > 0:
+            return "low"
+        return "none"
+
+    def _pressure_drivers(
+        self,
+        *,
+        anomaly_pressure: int,
+        incident_pressure: int,
+        trend_pressure: int,
+        live_pressure: int,
+        recurrence_pressure: int,
+        health_pressure: int,
+    ) -> list[str]:
+        drivers = [
+            ("Anomalies", anomaly_pressure),
+            ("Incidents", incident_pressure),
+            ("Trend movement", trend_pressure),
+            ("Live pressure", live_pressure),
+            ("Recurring patterns", recurrence_pressure),
+            ("Health degradation", health_pressure),
+        ]
+        return [
+            f"{label}: {value}"
+            for label, value in sorted(drivers, key=lambda item: item[1], reverse=True)
+            if value
+        ][:4]
 
     def _status_from_score(self, score: int) -> str:
         if score >= 90:
@@ -641,7 +822,7 @@ class OperationalIntelligenceService:
                     "errors": 0,
                 },
                 "direction": "steady",
-                "what_changed": ["No material movement from the previous window."],
+                "what_changed": ["No material movement from the prior window."],
             },
             "command_intelligence": {
                 "total_command_uses": 0,
@@ -649,6 +830,16 @@ class OperationalIntelligenceService:
                 "dominant_command": None,
                 "pressure_by_command": [],
                 "noisy_actors": [],
+            },
+            "anomaly_memory": {
+                "recurring_signals": [],
+                "recurring_incidents": [],
+                "incident_fingerprint_count": 0,
+            },
+            "pressure": {
+                "score": 0,
+                "band": "none",
+                "drivers": [],
             },
             "recommendations": ["No immediate action needed; keep normal monitoring."],
             "guild_ids": [],

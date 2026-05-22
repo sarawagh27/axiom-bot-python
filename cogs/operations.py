@@ -13,8 +13,21 @@ from discord.ext import commands, tasks
 
 from core.anomaly_detection import AnomalySignal, anomaly_detector
 from core.incidents import incident_service
-from core.server_health import ServerHealthSnapshot, server_health_analyzer
+from core.server_health import ServerHealthSnapshot
 from services.operational_intelligence import operational_intelligence_service
+from services.operational_formatting import (
+    bullet_lines,
+    clip,
+    format_actor_pressure,
+    format_command_intelligence,
+    format_recommendations,
+    format_what_changed,
+    pressure_label,
+    pressure_ratio,
+    severity_label,
+    trend_line,
+    window_label,
+)
 from util.discord_ui import badge, join_lines, make_embed
 from util.permissions import is_admin
 
@@ -23,34 +36,10 @@ SEVERITY_ORDER = {"none": 0, "low": 1, "medium": 2, "watch": 2, "high": 3, "degr
 ALERT_DEDUP_SECONDS = 3600
 
 
-def _clip(value: str, limit: int = 1024) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 20].rstrip()}... [truncated]"
-
-
-def _window_label(window_minutes: int) -> str:
-    if window_minutes % 1440 == 0:
-        return f"{window_minutes // 1440}d"
-    if window_minutes % 60 == 0:
-        return f"{window_minutes // 60}h"
-    return f"{window_minutes}m"
-
-
-def _severity_label(value: str) -> str:
-    return f"{badge(value)} `{value}`"
-
-
 def _require_guild_id(interaction: discord.Interaction) -> int:
     if interaction.guild_id is None:
         raise RuntimeError("Operations commands require a guild context.")
     return interaction.guild_id
-
-
-def _pressure_ratio(count: int, threshold: int) -> str:
-    if threshold <= 0:
-        return "n/a"
-    return f"{count / threshold:.1f}x threshold"
 
 
 def _signal_root_cause(signal: AnomalySignal) -> str:
@@ -78,7 +67,8 @@ def _signal_root_cause(signal: AnomalySignal) -> str:
 def _format_anomaly(signal: AnomalySignal) -> str:
     parts = [
         signal.description,
-        f"Signal: **{signal.count}** / **{signal.threshold}** ({_pressure_ratio(signal.count, signal.threshold)})",
+        f"Severity: {severity_label(signal.severity)}",
+        f"Signal: **{signal.count}** / **{signal.threshold}** ({pressure_ratio(signal.count, signal.threshold)})",
         f"Why it matters: {_signal_root_cause(signal)}",
     ]
     if signal.actor_id:
@@ -89,17 +79,17 @@ def _format_anomaly(signal: AnomalySignal) -> str:
         parts.append(f"Command: `/{signal.command}`")
     if signal.event_type:
         parts.append(f"Telemetry: `{signal.event_type}`")
-    return _clip("\n".join(parts))
+    return clip("\n".join(parts))
 
 
 def _format_incident(incident: dict) -> str:
     linked_events = incident.get("linked_event_ids") or []
     parts = [
-        f"`{incident['incident_id']}` - {_severity_label(incident['severity'])} - **{incident['status']}**",
+        f"`{incident['incident_id']}` - {severity_label(incident['severity'])} - **{incident['status']}**",
         incident["description"],
         (
             f"Signal: **{incident['count']}** / **{incident['threshold']}** "
-            f"({_pressure_ratio(incident['count'], incident['threshold'])})"
+            f"({pressure_ratio(incident['count'], incident['threshold'])})"
         ),
         f"Links: **{len(linked_events)}** telemetry event(s)",
     ]
@@ -113,96 +103,34 @@ def _format_incident(incident: dict) -> str:
         parts.append(
             f"Observed: <t:{int(incident['first_seen_ts'])}:R> -> <t:{int(incident['last_seen_ts'])}:R>"
         )
-    return _clip("\n".join(parts))
+    recurrence = incident.get("recurrence")
+    if recurrence and recurrence.get("occurrences", 0) > 1:
+        parts.append(f"Recurrence: **{recurrence['occurrences']}** related incident(s) in memory")
+    return clip("\n".join(parts))
 
 
-def _trend_comparison(guild_id: int, window_seconds: int) -> dict[str, Any]:
-    return operational_intelligence_service.trend(guild_id, window_seconds)
-
-
-def _trend_line(label: str, current: int, previous: int) -> str:
-    if current == previous:
-        marker = "steady"
-    elif current > previous:
-        marker = f"up +{current - previous}"
-    else:
-        marker = f"down -{previous - current}"
-    return f"{label}: **{current}** ({marker} vs previous window)"
-
-
-def _format_what_changed(trend: dict[str, Any]) -> str:
-    return join_lines(f"- {item}" for item in trend.get("what_changed", [])[:4])
-
-
-def _format_command_intelligence(command_intelligence: dict[str, Any]) -> str:
-    lines: list[str] = []
-    dominant = command_intelligence.get("dominant_command")
-    if dominant:
-        lines.append(
-            f"Dominant: `/{dominant['command']}` at **{int(dominant['share'] * 100)}%** of command traffic"
-        )
-    top_commands = command_intelligence.get("top_commands", [])[:3]
-    if top_commands:
-        lines.append(
-            "Top: "
-            + ", ".join(
-                f"`/{item['command']}` **{item['uses']}**"
-                for item in top_commands
-            )
-        )
-    pressure = command_intelligence.get("pressure_by_command", [])[:2]
-    if pressure:
-        lines.append(
-            "Pressure: "
-            + ", ".join(
-                f"`/{item['command']}` **{item['events']}**"
-                for item in pressure
-            )
-        )
-    return join_lines(lines, empty="No command pressure detected.")
-
-
-def _format_actor_pressure(command_intelligence: dict[str, Any]) -> str:
-    actors = command_intelligence.get("noisy_actors", [])[:4]
-    if not actors:
-        return "No suspicious actor pressure detected."
-    return join_lines(
-        (
-            f"- <@{actor['user_id']}>: **{actor['pressure_events']}** pressure event(s), "
-            f"**{actor['cooldown_hits']}** cooldown hit(s), **{actor['rate_limits']}** rate limit(s)"
-        )
-        for actor in actors
+def _snapshot_from_health(health: dict[str, Any], generated_at: float) -> ServerHealthSnapshot:
+    return ServerHealthSnapshot(
+        guild_id=health["guild_id"],
+        score=health["score"],
+        status=health["status"],
+        window_seconds=health["window_seconds"],
+        total_events=health["total_events"],
+        active_sessions=health["active_sessions"],
+        unique_users=health["unique_users"],
+        severity_counts=health["severity_counts"],
+        event_counts=health["event_counts"],
+        last_event_ts=health["last_event_ts"],
+        generated_at=generated_at,
+        signals=health["signals"],
     )
 
 
-def _format_recommendations(items: list[str]) -> str:
-    return join_lines(f"- {item}" for item in items[:4])
-
-
-def _recommendations(
-    snapshot: ServerHealthSnapshot,
-    anomaly_signals: list[AnomalySignal],
-    incidents: list[dict[str, Any]],
-    trend: dict[str, Any],
-) -> list[str]:
-    recs: list[str] = []
-    current = trend["current"]
-    previous = trend["previous"]
-    anomaly_types = {signal.anomaly_type for signal in anomaly_signals}
-
-    if incidents:
-        recs.append("Review active incidents first; they already have linked telemetry and a stable fingerprint.")
-    if "repeated_failures" in anomaly_types or current["errors"] > previous["errors"]:
-        recs.append("Inspect recent error events and pause new ping sessions until failures stop clustering.")
-    if "cooldown_abuse" in anomaly_types or current["rate_limits"] or current["rejections"] >= 3:
-        recs.append("Check whether cooldowns or allowed-channel policy need tightening for the noisy actor.")
-    if "abnormal_ping_session_activity" in anomaly_types or snapshot.active_sessions:
-        recs.append("Confirm active sessions are intentional; stop or slow any session creating avoidable pressure.")
-    if "suspicious_command_spike" in anomaly_types:
-        recs.append("Compare top commands against planned admin activity before treating the spike as misuse.")
-    if not recs:
-        recs.append("No immediate action needed. Keep normal monitoring and review again if pressure rises.")
-    return recs[:4]
+def _recurrence_by_fingerprint(memory: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        item["fingerprint"]: item
+        for item in memory.get("recurring_incidents", [])
+    }
 
 
 def _executive_summary(
@@ -210,9 +138,8 @@ def _executive_summary(
     anomaly_count: int,
     incident_count: int,
     trend: dict[str, Any],
+    pressure: dict[str, Any] | None = None,
 ) -> str:
-    current = trend["current"]
-    previous = trend["previous"]
     if snapshot.status == "critical" or incident_count:
         posture = "Active operational pressure is present."
     elif snapshot.status in {"degraded", "watch"} or anomaly_count:
@@ -220,15 +147,14 @@ def _executive_summary(
     else:
         posture = "The server is quiet and inside expected operating bounds."
 
-    movement = "steady"
-    if current["errors"] > previous["errors"] or current["rate_limits"] > previous["rate_limits"]:
-        movement = "worsening"
-    elif current["errors"] < previous["errors"] and current["rate_limits"] <= previous["rate_limits"]:
-        movement = "improving"
+    pressure_text = ""
+    if pressure:
+        pressure_text = f" Ops pressure is **{pressure['score']}/100** ({pressure['band']})."
 
     return (
         f"{posture} Health is **{snapshot.score}/100** with **{anomaly_count}** anomaly "
-        f"signal(s), **{incident_count}** active incident(s), and a **{movement}** trend."
+        f"signal(s), **{incident_count}** active incident(s), and a **{trend['direction']}** trend."
+        f"{pressure_text}"
     )
 
 
@@ -298,14 +224,30 @@ class OperationsCog(commands.Cog, name="Operations"):
             channel = self._alert_channel(guild)
             if channel is None:
                 continue
+            overview = operational_intelligence_service.overview(
+                guild_id=guild.id,
+                window_seconds=900,
+                event_limit=5,
+            )
 
             embed = make_embed(
                 f"Ops Alert - {guild.name}",
                 (
                     "Axiom detected high-confidence operational pressure in the last **15m**. "
-                    "This alert was sent proactively because the signal is high severity or above."
+                    f"Current pressure is **{overview['pressure']['score']}/100** "
+                    f"({overview['pressure']['band']})."
                 ),
                 status=report.highest_severity,
+            )
+            embed.add_field(
+                name="Pressure",
+                value=pressure_label(overview["pressure"]["score"]),
+                inline=True,
+            )
+            embed.add_field(
+                name="Trend",
+                value=f"**{overview['trend']['direction']}**",
+                inline=True,
             )
             for signal in fresh_signals:
                 embed.add_field(
@@ -314,16 +256,13 @@ class OperationsCog(commands.Cog, name="Operations"):
                     inline=False,
                 )
             embed.add_field(
-                name="Suggested Action",
-                value=join_lines(
-                    f"- {item}"
-                    for item in _recommendations(
-                        server_health_analyzer.snapshot(guild.id, 900),
-                        fresh_signals,
-                        incident_service.active_incidents(guild.id, limit=3),
-                        _trend_comparison(guild.id, 900),
-                    )
-                ),
+                name="What Changed",
+                value=format_what_changed(overview["trend"]),
+                inline=False,
+            )
+            embed.add_field(
+                name="Recommended Response",
+                value=format_recommendations(overview["recommendations"]),
                 inline=False,
             )
             embed.set_footer(text="Axiom Operations | Proactive anomaly alert")
@@ -370,30 +309,28 @@ class OperationsCog(commands.Cog, name="Operations"):
         window_minutes: int,
     ) -> None:
         guild_id = _require_guild_id(interaction)
-        snapshot = server_health_analyzer.snapshot(
+        overview = operational_intelligence_service.overview(
             guild_id=guild_id,
             window_seconds=window_minutes * 60,
+            event_limit=8,
         )
-        anomaly_report = anomaly_detector.detect(
-            guild_id=guild_id,
-            window_seconds=window_minutes * 60,
-        )
-        incident_service.reconcile_anomalies(anomaly_report)
-        incidents = incident_service.active_incidents(guild_id)
-        trend = _trend_comparison(guild_id, window_minutes * 60)
-        command_intelligence = operational_intelligence_service.command_intelligence(
-            guild_id,
-            window_minutes * 60,
-        )
+        health = overview["health"]
+        anomalies = overview["anomalies"]
+        incidents = overview["incidents"]["active"]
+        trend = overview["trend"]
+        command_intelligence = overview["command_intelligence"]
+        pressure = overview["pressure"]
+        snapshot = _snapshot_from_health(health, overview["generated_at"])
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
             f"Ops Status - {guild_name}",
-            _executive_summary(snapshot, len(anomaly_report.signals), len(incidents), trend),
+            _executive_summary(snapshot, len(anomalies["signals"]), len(incidents), trend, pressure),
             status=snapshot.status,
         )
-        embed.add_field(name="Window", value=_window_label(window_minutes), inline=True)
-        embed.add_field(name="Health", value=f"**{snapshot.score}/100**\n{_severity_label(snapshot.status)}", inline=True)
+        embed.add_field(name="Window", value=window_label(window_minutes), inline=True)
+        embed.add_field(name="Health", value=f"**{snapshot.score}/100**\n{severity_label(snapshot.status)}", inline=True)
+        embed.add_field(name="Ops Pressure", value=pressure_label(pressure["score"]), inline=True)
         embed.add_field(name="Incidents", value=f"**{len(incidents)}** active", inline=True)
         embed.add_field(
             name="Activity",
@@ -413,20 +350,28 @@ class OperationsCog(commands.Cog, name="Operations"):
         embed.add_field(
             name="Trend",
             value=join_lines([
-                _trend_line("Events", trend["current"]["events"], trend["previous"]["events"]),
-                _trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
-                _trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
+                trend_line("Events", trend["current"]["events"], trend["previous"]["events"]),
+                trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
+                trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
             ]),
             inline=False,
         )
         embed.add_field(
             name="What Changed",
-            value=_format_what_changed(trend),
+            value=format_what_changed(trend),
             inline=False,
         )
         embed.add_field(
             name="Command Intelligence",
-            value=_format_command_intelligence(command_intelligence),
+            value=format_command_intelligence(command_intelligence),
+            inline=False,
+        )
+        embed.add_field(
+            name="Pressure Drivers",
+            value=bullet_lines(
+                pressure["drivers"],
+                empty="No active pressure drivers.",
+            ),
             inline=False,
         )
         embed.add_field(
@@ -436,10 +381,7 @@ class OperationsCog(commands.Cog, name="Operations"):
         )
         embed.add_field(
             name="Recommended Actions",
-            value=join_lines(
-                f"- {item}"
-                for item in _recommendations(snapshot, anomaly_report.signals, incidents, trend)
-            ),
+            value=format_recommendations(overview["recommendations"]),
             inline=False,
         )
         embed.set_footer(text="Axiom Operations | Calm status from operational telemetry")
@@ -451,47 +393,58 @@ class OperationsCog(commands.Cog, name="Operations"):
         window_minutes: int,
     ) -> None:
         guild_id = _require_guild_id(interaction)
-        report = anomaly_detector.detect(
+        overview = operational_intelligence_service.overview(
             guild_id=guild_id,
             window_seconds=window_minutes * 60,
+            event_limit=8,
         )
-        incident_service.reconcile_anomalies(report)
-        trend = _trend_comparison(guild_id, window_minutes * 60)
-        incidents = incident_service.active_incidents(guild_id, limit=5)
-        snapshot = server_health_analyzer.snapshot(guild_id, window_minutes * 60)
-        command_intelligence = operational_intelligence_service.command_intelligence(
-            guild_id,
-            window_minutes * 60,
-        )
+        anomalies = overview["anomalies"]
+        trend = overview["trend"]
+        command_intelligence = overview["command_intelligence"]
+        pressure = overview["pressure"]
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
             f"Ops Anomalies - {guild_name}",
             (
-                f"**{len(report.signals)}** signal(s) detected in the last **{_window_label(window_minutes)}**. "
-                "Each signal includes why it matters and what to check next."
+                f"**{len(anomalies['signals'])}** signal(s) detected in the last **{window_label(window_minutes)}**. "
+                f"Ops pressure is **{pressure['score']}/100** with **{pressure['band']}** severity."
             ),
-            status=report.highest_severity,
+            status=anomalies["highest_severity"],
         )
-        embed.add_field(name="Events Analyzed", value=str(report.total_events), inline=True)
-        embed.add_field(name="Highest Severity", value=_severity_label(report.highest_severity), inline=True)
+        embed.add_field(name="Events Analyzed", value=str(anomalies["total_events"]), inline=True)
+        embed.add_field(name="Highest Severity", value=severity_label(anomalies["highest_severity"]), inline=True)
+        embed.add_field(name="Ops Pressure", value=pressure_label(pressure["score"]), inline=True)
         embed.add_field(
             name="Trend",
             value=join_lines([
-                _trend_line("Commands", trend["current"]["commands"], trend["previous"]["commands"]),
-                _trend_line("Rejections", trend["current"]["rejections"], trend["previous"]["rejections"]),
-                _trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
+                trend_line("Commands", trend["current"]["commands"], trend["previous"]["commands"]),
+                trend_line("Rejections", trend["current"]["rejections"], trend["previous"]["rejections"]),
+                trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
             ]),
             inline=False,
         )
         embed.add_field(
             name="Suspicious Activity",
-            value=_format_actor_pressure(command_intelligence),
+            value=format_actor_pressure(command_intelligence),
             inline=False,
         )
+        recurring = overview["anomaly_memory"]["recurring_signals"]
+        if recurring:
+            embed.add_field(
+                name="Recurring Patterns",
+                value=bullet_lines(
+                    (
+                        f"**{item['title']}** recurred **{item['occurrences']}** time(s); "
+                        f"last seen <t:{int(item['last_seen_ts'])}:R>"
+                    )
+                    for item in recurring[:3]
+                ),
+                inline=False,
+            )
 
-        if report.signals:
-            for signal in report.signals[:5]:
+        if anomalies["signals"]:
+            for signal in [AnomalySignal(**item) for item in anomalies["signals"][:5]]:
                 embed.add_field(
                     name=f"{badge(signal.severity)} {signal.title}",
                     value=_format_anomaly(signal),
@@ -504,8 +457,8 @@ class OperationsCog(commands.Cog, name="Operations"):
                 inline=False,
             )
         embed.add_field(
-            name="Suggested Actions",
-            value=join_lines(f"- {item}" for item in _recommendations(snapshot, report.signals, incidents, trend)),
+            name="Recommended Response",
+            value=format_recommendations(overview["recommendations"]),
             inline=False,
         )
 
@@ -559,18 +512,18 @@ class OperationsCog(commands.Cog, name="Operations"):
         window_minutes: app_commands.Range[int, 15, 1440] = 60,
     ) -> None:
         guild_id = _require_guild_id(interaction)
-        report = anomaly_detector.detect(
+        overview = operational_intelligence_service.overview(
             guild_id=guild_id,
             window_seconds=window_minutes * 60,
+            event_limit=8,
         )
-        incident_service.reconcile_anomalies(report)
-        incidents = incident_service.active_incidents(guild_id, limit=5)
-        snapshot = server_health_analyzer.snapshot(guild_id, window_minutes * 60)
-        trend = _trend_comparison(guild_id, window_minutes * 60)
-        command_intelligence = operational_intelligence_service.command_intelligence(
-            guild_id,
-            window_minutes * 60,
-        )
+        anomalies = overview["anomalies"]
+        incidents = overview["incidents"]["active"][:5]
+        snapshot = _snapshot_from_health(overview["health"], overview["generated_at"])
+        trend = overview["trend"]
+        command_intelligence = overview["command_intelligence"]
+        pressure = overview["pressure"]
+        recurrence_map = _recurrence_by_fingerprint(overview["anomaly_memory"])
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
@@ -579,13 +532,15 @@ class OperationsCog(commands.Cog, name="Operations"):
                 f"**{len(incidents)}** active incident(s). "
                 "Incidents are durable anomaly fingerprints with linked telemetry."
             ),
-            status=incident_service.active_snapshot(guild_id)["highest_severity"],
+            status=overview["incidents"]["highest_severity"],
         )
-        embed.add_field(name="Window", value=_window_label(window_minutes), inline=True)
-        embed.add_field(name="New Signals", value=str(len(report.signals)), inline=True)
-        embed.add_field(name="Health", value=f"**{snapshot.score}/100**\n{_severity_label(snapshot.status)}", inline=True)
+        embed.add_field(name="Window", value=window_label(window_minutes), inline=True)
+        embed.add_field(name="New Signals", value=str(len(anomalies["signals"])), inline=True)
+        embed.add_field(name="Ops Pressure", value=pressure_label(pressure["score"]), inline=True)
+        embed.add_field(name="Health", value=f"**{snapshot.score}/100**\n{severity_label(snapshot.status)}", inline=True)
         if incidents:
             for incident in incidents:
+                incident = {**incident, "recurrence": recurrence_map.get(incident["fingerprint"])}
                 embed.add_field(
                     name=f"{badge(incident['severity'])} {incident['title']}",
                     value=_format_incident(incident),
@@ -600,25 +555,25 @@ class OperationsCog(commands.Cog, name="Operations"):
         embed.add_field(
             name="Incident Signal Breakdown",
             value=join_lines([
-                _trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
-                _trend_line("Sessions", trend["current"]["sessions"], trend["previous"]["sessions"]),
-                _trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
+                trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
+                trend_line("Sessions", trend["current"]["sessions"], trend["previous"]["sessions"]),
+                trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
             ]),
             inline=False,
         )
         embed.add_field(
             name="What Changed",
-            value=_format_what_changed(trend),
+            value=format_what_changed(trend),
             inline=False,
         )
         embed.add_field(
             name="Pressure Sources",
-            value=_format_actor_pressure(command_intelligence),
+            value=format_actor_pressure(command_intelligence),
             inline=False,
         )
         embed.add_field(
-            name="Suggested Actions",
-            value=join_lines(f"- {item}" for item in _recommendations(snapshot, report.signals, incidents, trend)),
+            name="Recommended Response",
+            value=format_recommendations(overview["recommendations"]),
             inline=False,
         )
 
@@ -651,21 +606,9 @@ class OperationsCog(commands.Cog, name="Operations"):
         timeline = overview["timeline"]
         trend = overview["trend"]
         command_intelligence = overview["command_intelligence"]
+        pressure = overview["pressure"]
 
-        snapshot = ServerHealthSnapshot(
-            guild_id=guild_id,
-            score=health["score"],
-            status=health["status"],
-            window_seconds=health["window_seconds"],
-            total_events=health["total_events"],
-            active_sessions=health["active_sessions"],
-            unique_users=health["unique_users"],
-            severity_counts=health["severity_counts"],
-            event_counts=health["event_counts"],
-            last_event_ts=health["last_event_ts"],
-            generated_at=overview["generated_at"],
-            signals=health["signals"],
-        )
+        snapshot = _snapshot_from_health(health, overview["generated_at"])
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
             f"Ops Report - {guild_name}",
@@ -674,6 +617,7 @@ class OperationsCog(commands.Cog, name="Operations"):
                 len(anomalies["signals"]),
                 incidents["active_count"],
                 trend,
+                pressure,
             ),
             status=health["status"],
         )
@@ -695,31 +639,53 @@ class OperationsCog(commands.Cog, name="Operations"):
             name="Risk",
             value=(
                 f"Anomalies: **{len(anomalies['signals'])}**\n"
-                f"Highest severity: {_severity_label(anomalies['highest_severity'])}\n"
-                f"Active incidents: **{incidents['active_count']}**"
+                f"Highest severity: {severity_label(anomalies['highest_severity'])}\n"
+                f"Active incidents: **{incidents['active_count']}**\n"
+                f"Ops pressure: **{pressure['score']}/100**"
             ),
             inline=True,
         )
         embed.add_field(
+            name="Pressure Drivers",
+            value=bullet_lines(
+                pressure["drivers"],
+                empty="No active pressure drivers.",
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="Trend Comparison",
             value=join_lines([
-                _trend_line("Events", trend["current"]["events"], trend["previous"]["events"]),
-                _trend_line("Commands", trend["current"]["commands"], trend["previous"]["commands"]),
-                _trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
-                _trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
+                trend_line("Events", trend["current"]["events"], trend["previous"]["events"]),
+                trend_line("Commands", trend["current"]["commands"], trend["previous"]["commands"]),
+                trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
+                trend_line("Rate limits", trend["current"]["rate_limits"], trend["previous"]["rate_limits"]),
             ]),
             inline=False,
         )
         embed.add_field(
             name="What Changed",
-            value=_format_what_changed(trend),
+            value=format_what_changed(trend),
             inline=False,
         )
         embed.add_field(
             name="Command Usage Intelligence",
-            value=_format_command_intelligence(command_intelligence),
+            value=format_command_intelligence(command_intelligence),
             inline=False,
         )
+        recurring = overview["anomaly_memory"]["recurring_signals"]
+        if recurring:
+            embed.add_field(
+                name="Recurring Patterns",
+                value=bullet_lines(
+                    (
+                        f"**{item['title']}** recurred **{item['occurrences']}** time(s); "
+                        f"last seen <t:{int(item['last_seen_ts'])}:R>"
+                    )
+                    for item in recurring[:3]
+                ),
+                inline=False,
+            )
         memory_items = timeline[:4]
         embed.add_field(
             name="Operational Memory",
@@ -747,7 +713,7 @@ class OperationsCog(commands.Cog, name="Operations"):
             )
         embed.add_field(
             name="Recommendations",
-            value=_format_recommendations(overview["recommendations"]),
+            value=format_recommendations(overview["recommendations"]),
             inline=False,
         )
         embed.set_footer(text="Axiom Operations | Discord-first operational report")

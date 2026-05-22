@@ -6,6 +6,7 @@ import unittest
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 
 from core.database import db  # noqa: E402
+from core.incidents import incident_service  # noqa: E402
 from core.telemetry import EventName  # noqa: E402
 from services.operational_intelligence import operational_intelligence_service  # noqa: E402
 from services.operational_events import OperationalEventType  # noqa: E402
@@ -153,6 +154,45 @@ class OperationalIntelligenceServiceTest(unittest.TestCase):
         self.assertEqual(len(incident["linked_event_ids"]), 3)
         self.assertTrue(any(item["kind"] == "incident" for item in overview["timeline"]))
 
+    def test_pressure_and_anomaly_memory_detect_recurring_incidents(self) -> None:
+        for _ in range(3):
+            db.record_operational_event(
+                event_type=EventName.COMMAND_ERROR,
+                severity="error",
+                source="test",
+                guild_id=123,
+                user_id=456,
+                command="pingbomb",
+            )
+        first = operational_intelligence_service.overview(guild_id=123, window_seconds=3600)
+        incident_service.resolve(
+            first["incidents"]["active"][0]["incident_id"],
+            actor_id=999,
+            note="Recovered",
+        )
+        for _ in range(3):
+            db.record_operational_event(
+                event_type=EventName.COMMAND_ERROR,
+                severity="error",
+                source="test",
+                guild_id=123,
+                user_id=456,
+                command="pingbomb",
+            )
+
+        overview = operational_intelligence_service.overview(guild_id=123, window_seconds=3600)
+
+        self.assertGreater(overview["pressure"]["score"], 0)
+        self.assertIn(overview["pressure"]["band"], {"medium", "high", "critical"})
+        self.assertTrue(overview["pressure"]["drivers"])
+        self.assertEqual(
+            overview["anomaly_memory"]["recurring_signals"][0]["occurrences"],
+            2,
+        )
+        self.assertTrue(
+            any("recurring" in item.lower() for item in overview["recommendations"])
+        )
+
     def test_empty_overview_has_no_mock_data(self) -> None:
         overview = operational_intelligence_service.overview(window_seconds=3600)
 
@@ -162,6 +202,8 @@ class OperationalIntelligenceServiceTest(unittest.TestCase):
         self.assertEqual(overview["health"]["score"], 100)
         self.assertEqual(overview["incidents"]["active"], [])
         self.assertEqual(overview["timeline"], [])
+        self.assertEqual(overview["pressure"]["score"], 0)
+        self.assertEqual(overview["anomaly_memory"]["recurring_signals"], [])
 
 
 if __name__ == "__main__":

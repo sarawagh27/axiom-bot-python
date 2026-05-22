@@ -171,6 +171,9 @@ class IncidentService:
             "highest_severity": self._highest_severity(incidents),
         }
 
+    def fingerprint_for_signal(self, signal: AnomalySignal) -> str:
+        return self._fingerprint(signal)
+
     def _transition(
         self,
         incident_id: str,
