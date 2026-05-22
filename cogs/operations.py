@@ -5,7 +5,6 @@ cogs/operations.py - operational intelligence commands for server admins.
 from __future__ import annotations
 
 import time
-from collections import Counter
 from typing import Any
 
 import discord
@@ -118,31 +117,7 @@ def _format_incident(incident: dict) -> str:
 
 
 def _trend_comparison(guild_id: int, window_seconds: int) -> dict[str, Any]:
-    from core.database import db
-    from core.telemetry import EventName
-
-    now = time.time()
-    events = db.get_operational_events(guild_id, window_seconds * 2)
-    current = [event for event in events if event["timestamp"] >= now - window_seconds]
-    previous = [
-        event
-        for event in events
-        if now - (window_seconds * 2) <= event["timestamp"] < now - window_seconds
-    ]
-
-    def summary(items: list[dict[str, Any]]) -> dict[str, int]:
-        counts = Counter(event["event_type"] for event in items)
-        severity = Counter(event["severity"] for event in items)
-        return {
-            "events": len(items),
-            "commands": counts.get(EventName.COMMAND_USED, 0),
-            "sessions": counts.get(EventName.SESSION_STARTED, 0),
-            "rate_limits": counts.get(EventName.COMMAND_RATE_LIMITED, 0),
-            "rejections": counts.get(EventName.COMMAND_REJECTED, 0),
-            "errors": severity.get("error", 0) + severity.get("critical", 0),
-        }
-
-    return {"current": summary(current), "previous": summary(previous)}
+    return operational_intelligence_service.trend(guild_id, window_seconds)
 
 
 def _trend_line(label: str, current: int, previous: int) -> str:
@@ -153,6 +128,55 @@ def _trend_line(label: str, current: int, previous: int) -> str:
     else:
         marker = f"down -{previous - current}"
     return f"{label}: **{current}** ({marker} vs previous window)"
+
+
+def _format_what_changed(trend: dict[str, Any]) -> str:
+    return join_lines(f"- {item}" for item in trend.get("what_changed", [])[:4])
+
+
+def _format_command_intelligence(command_intelligence: dict[str, Any]) -> str:
+    lines: list[str] = []
+    dominant = command_intelligence.get("dominant_command")
+    if dominant:
+        lines.append(
+            f"Dominant: `/{dominant['command']}` at **{int(dominant['share'] * 100)}%** of command traffic"
+        )
+    top_commands = command_intelligence.get("top_commands", [])[:3]
+    if top_commands:
+        lines.append(
+            "Top: "
+            + ", ".join(
+                f"`/{item['command']}` **{item['uses']}**"
+                for item in top_commands
+            )
+        )
+    pressure = command_intelligence.get("pressure_by_command", [])[:2]
+    if pressure:
+        lines.append(
+            "Pressure: "
+            + ", ".join(
+                f"`/{item['command']}` **{item['events']}**"
+                for item in pressure
+            )
+        )
+    return join_lines(lines, empty="No command pressure detected.")
+
+
+def _format_actor_pressure(command_intelligence: dict[str, Any]) -> str:
+    actors = command_intelligence.get("noisy_actors", [])[:4]
+    if not actors:
+        return "No suspicious actor pressure detected."
+    return join_lines(
+        (
+            f"- <@{actor['user_id']}>: **{actor['pressure_events']}** pressure event(s), "
+            f"**{actor['cooldown_hits']}** cooldown hit(s), **{actor['rate_limits']}** rate limit(s)"
+        )
+        for actor in actors
+    )
+
+
+def _format_recommendations(items: list[str]) -> str:
+    return join_lines(f"- {item}" for item in items[:4])
 
 
 def _recommendations(
@@ -357,6 +381,10 @@ class OperationsCog(commands.Cog, name="Operations"):
         incident_service.reconcile_anomalies(anomaly_report)
         incidents = incident_service.active_incidents(guild_id)
         trend = _trend_comparison(guild_id, window_minutes * 60)
+        command_intelligence = operational_intelligence_service.command_intelligence(
+            guild_id,
+            window_minutes * 60,
+        )
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
@@ -392,6 +420,16 @@ class OperationsCog(commands.Cog, name="Operations"):
             inline=False,
         )
         embed.add_field(
+            name="What Changed",
+            value=_format_what_changed(trend),
+            inline=False,
+        )
+        embed.add_field(
+            name="Command Intelligence",
+            value=_format_command_intelligence(command_intelligence),
+            inline=False,
+        )
+        embed.add_field(
             name="Signals",
             value=join_lines(f"- {signal}" for signal in snapshot.signals),
             inline=False,
@@ -421,6 +459,10 @@ class OperationsCog(commands.Cog, name="Operations"):
         trend = _trend_comparison(guild_id, window_minutes * 60)
         incidents = incident_service.active_incidents(guild_id, limit=5)
         snapshot = server_health_analyzer.snapshot(guild_id, window_minutes * 60)
+        command_intelligence = operational_intelligence_service.command_intelligence(
+            guild_id,
+            window_minutes * 60,
+        )
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
@@ -440,6 +482,11 @@ class OperationsCog(commands.Cog, name="Operations"):
                 _trend_line("Rejections", trend["current"]["rejections"], trend["previous"]["rejections"]),
                 _trend_line("Errors", trend["current"]["errors"], trend["previous"]["errors"]),
             ]),
+            inline=False,
+        )
+        embed.add_field(
+            name="Suspicious Activity",
+            value=_format_actor_pressure(command_intelligence),
             inline=False,
         )
 
@@ -520,6 +567,10 @@ class OperationsCog(commands.Cog, name="Operations"):
         incidents = incident_service.active_incidents(guild_id, limit=5)
         snapshot = server_health_analyzer.snapshot(guild_id, window_minutes * 60)
         trend = _trend_comparison(guild_id, window_minutes * 60)
+        command_intelligence = operational_intelligence_service.command_intelligence(
+            guild_id,
+            window_minutes * 60,
+        )
 
         guild_name = interaction.guild.name if interaction.guild else "this server"
         embed = make_embed(
@@ -556,6 +607,16 @@ class OperationsCog(commands.Cog, name="Operations"):
             inline=False,
         )
         embed.add_field(
+            name="What Changed",
+            value=_format_what_changed(trend),
+            inline=False,
+        )
+        embed.add_field(
+            name="Pressure Sources",
+            value=_format_actor_pressure(command_intelligence),
+            inline=False,
+        )
+        embed.add_field(
             name="Suggested Actions",
             value=join_lines(f"- {item}" for item in _recommendations(snapshot, report.signals, incidents, trend)),
             inline=False,
@@ -587,9 +648,9 @@ class OperationsCog(commands.Cog, name="Operations"):
         health = overview["health"]
         anomalies = overview["anomalies"]
         incidents = overview["incidents"]
-        analytics = overview["analytics"]
         timeline = overview["timeline"]
-        trend = _trend_comparison(guild_id, window_minutes * 60)
+        trend = overview["trend"]
+        command_intelligence = overview["command_intelligence"]
 
         snapshot = ServerHealthSnapshot(
             guild_id=guild_id,
@@ -649,17 +710,14 @@ class OperationsCog(commands.Cog, name="Operations"):
             ]),
             inline=False,
         )
-        top_commands = analytics["top_commands"][:3]
         embed.add_field(
-            name="Top Commands",
-            value=(
-                "\n".join(
-                    f"`/{item['command']}`: **{item['uses']}** use(s)"
-                    for item in top_commands
-                )
-                if top_commands
-                else "No command usage recorded in this window."
-            ),
+            name="What Changed",
+            value=_format_what_changed(trend),
+            inline=False,
+        )
+        embed.add_field(
+            name="Command Usage Intelligence",
+            value=_format_command_intelligence(command_intelligence),
             inline=False,
         )
         memory_items = timeline[:4]
@@ -689,15 +747,7 @@ class OperationsCog(commands.Cog, name="Operations"):
             )
         embed.add_field(
             name="Recommendations",
-            value=join_lines(
-                f"- {item}"
-                for item in _recommendations(
-                    snapshot,
-                    [AnomalySignal(**signal) for signal in anomalies["signals"]],
-                    incidents["active"],
-                    trend,
-                )
-            ),
+            value=_format_recommendations(overview["recommendations"]),
             inline=False,
         )
         embed.set_footer(text="Axiom Operations | Discord-first operational report")

@@ -16,6 +16,12 @@ from core.telemetry import EventName
 DEFAULT_WINDOW_SECONDS = 3600
 LIVE_WINDOW_SECONDS = 300
 DEFAULT_EVENT_LIMIT = 40
+PRESSURE_EVENTS = {
+    EventName.COMMAND_ERROR,
+    EventName.COMMAND_RATE_LIMITED,
+    EventName.COMMAND_REJECTED,
+    EventName.SESSION_STOPPED,
+}
 
 
 def _bucket_label(timestamp: float, bucket_seconds: int) -> str:
@@ -66,6 +72,16 @@ class OperationalIntelligenceService:
         live_metrics = self.live_metrics(resolved_guild_id)
         incidents = self.incidents(resolved_guild_id, window_seconds)
         timeline = self.timeline(resolved_guild_id, window_seconds)
+        trend = self.trend(resolved_guild_id, window_seconds)
+        command_intelligence = self.command_intelligence(resolved_guild_id, window_seconds)
+        recommendations = self.recommendations(
+            health=health,
+            anomalies=anomalies,
+            incidents=incidents,
+            analytics=analytics,
+            trend=trend,
+            command_intelligence=command_intelligence,
+        )
 
         return {
             "guild_id": resolved_guild_id,
@@ -78,6 +94,9 @@ class OperationalIntelligenceService:
             "live_metrics": live_metrics,
             "incidents": incidents,
             "timeline": timeline,
+            "trend": trend,
+            "command_intelligence": command_intelligence,
+            "recommendations": recommendations,
             "guild_ids": self.observed_guild_ids(),
         }
 
@@ -196,6 +215,158 @@ class OperationalIntelligenceService:
                 0,
             ),
         }
+
+    def trend(
+        self,
+        guild_id: int,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    ) -> dict[str, Any]:
+        from core.database import db
+
+        now = time.time()
+        events = db.get_operational_events(guild_id, window_seconds * 2)
+        current = [event for event in events if event["timestamp"] >= now - window_seconds]
+        previous = [
+            event
+            for event in events
+            if now - (window_seconds * 2) <= event["timestamp"] < now - window_seconds
+        ]
+
+        current_summary = self._event_window_summary(current)
+        previous_summary = self._event_window_summary(previous)
+        metrics = ("events", "commands", "sessions", "rate_limits", "rejections", "errors")
+        deltas = {
+            metric: current_summary[metric] - previous_summary[metric]
+            for metric in metrics
+        }
+
+        worsening = (
+            deltas["errors"] > 0
+            or deltas["rate_limits"] > 0
+            or deltas["rejections"] >= 3
+        )
+        improving = (
+            deltas["errors"] < 0
+            and deltas["rate_limits"] <= 0
+            and deltas["rejections"] <= 0
+        )
+        direction = "steady"
+        if worsening:
+            direction = "worsening"
+        elif improving:
+            direction = "improving"
+
+        return {
+            "current": current_summary,
+            "previous": previous_summary,
+            "deltas": deltas,
+            "direction": direction,
+            "what_changed": self._what_changed(current, previous, deltas),
+        }
+
+    def command_intelligence(
+        self,
+        guild_id: int,
+        window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    ) -> dict[str, Any]:
+        from core.database import db
+
+        events = db.get_operational_events(guild_id, window_seconds)
+        command_uses = Counter(
+            event["command"]
+            for event in events
+            if event["event_type"] == EventName.COMMAND_USED and event.get("command")
+        )
+        pressure_by_command: Counter[str] = Counter()
+        pressure_by_actor: Counter[int] = Counter()
+        cooldowns_by_actor: Counter[int] = Counter()
+        rate_limits_by_actor: Counter[int] = Counter()
+
+        for event in events:
+            command = event.get("command")
+            user_id = event.get("user_id")
+            is_cooldown = (
+                event["event_type"] == EventName.COMMAND_REJECTED
+                and event["metadata"].get("reason") == "cooldown"
+            )
+            is_pressure = event["event_type"] in PRESSURE_EVENTS or event["severity"] in {"error", "critical"}
+            if is_pressure:
+                if command:
+                    pressure_by_command[command] += 1
+                if user_id is not None:
+                    pressure_by_actor[user_id] += 1
+            if is_cooldown and user_id is not None:
+                cooldowns_by_actor[user_id] += 1
+            if event["event_type"] == EventName.COMMAND_RATE_LIMITED and user_id is not None:
+                rate_limits_by_actor[user_id] += 1
+
+        total_uses = sum(command_uses.values())
+        top_command = command_uses.most_common(1)[0] if command_uses else None
+        dominant_command = None
+        if top_command and total_uses:
+            share = top_command[1] / total_uses
+            if top_command[1] >= 5 and share >= 0.6:
+                dominant_command = {
+                    "command": top_command[0],
+                    "uses": top_command[1],
+                    "share": round(share, 2),
+                }
+
+        return {
+            "total_command_uses": total_uses,
+            "top_commands": [
+                {"command": command, "uses": uses}
+                for command, uses in command_uses.most_common(5)
+            ],
+            "dominant_command": dominant_command,
+            "pressure_by_command": [
+                {"command": command, "events": count}
+                for command, count in pressure_by_command.most_common(5)
+            ],
+            "noisy_actors": [
+                {
+                    "user_id": user_id,
+                    "pressure_events": count,
+                    "cooldown_hits": cooldowns_by_actor.get(user_id, 0),
+                    "rate_limits": rate_limits_by_actor.get(user_id, 0),
+                }
+                for user_id, count in pressure_by_actor.most_common(5)
+            ],
+        }
+
+    def recommendations(
+        self,
+        *,
+        health: dict[str, Any],
+        anomalies: dict[str, Any],
+        incidents: dict[str, Any],
+        analytics: dict[str, Any],
+        trend: dict[str, Any],
+        command_intelligence: dict[str, Any],
+    ) -> list[str]:
+        recommendations: list[str] = []
+        anomaly_types = {
+            signal["anomaly_type"]
+            for signal in anomalies.get("signals", [])
+        }
+
+        if incidents.get("active_count", 0):
+            recommendations.append("Triage active incidents first; they already group related telemetry.")
+        if "repeated_failures" in anomaly_types or trend["deltas"]["errors"] > 0:
+            recommendations.append("Pause non-essential ping activity until command/runtime failures stop clustering.")
+        if analytics.get("rate_limit_count", 0) or trend["deltas"]["rate_limits"] > 0:
+            recommendations.append("Review rate-limit pressure by actor and command before loosening limits.")
+        if analytics.get("cooldown_trigger_count", 0) >= 3:
+            recommendations.append("Check whether repeated cooldown hits point to misuse or unclear operator expectations.")
+        if command_intelligence.get("dominant_command"):
+            command = command_intelligence["dominant_command"]["command"]
+            recommendations.append(f"Audit `/{command}` usage; it dominates recent command traffic.")
+        if health["active_sessions"]:
+            recommendations.append("Confirm active sessions are intentional and stop any unnecessary session.")
+        if not recommendations:
+            recommendations.append("No immediate action needed; keep normal monitoring.")
+
+        return recommendations[:4]
 
     def live_metrics(
         self,
@@ -326,6 +497,57 @@ class OperationalIntelligenceService:
             for label in sorted(buckets)
         ]
 
+    def _event_window_summary(self, events: list[dict[str, Any]]) -> dict[str, int]:
+        event_counts = Counter(event["event_type"] for event in events)
+        severity_counts = Counter(event["severity"] for event in events)
+        return {
+            "events": len(events),
+            "commands": event_counts.get(EventName.COMMAND_USED, 0),
+            "sessions": event_counts.get(EventName.SESSION_STARTED, 0),
+            "rate_limits": event_counts.get(EventName.COMMAND_RATE_LIMITED, 0),
+            "rejections": event_counts.get(EventName.COMMAND_REJECTED, 0),
+            "errors": severity_counts.get("error", 0) + severity_counts.get("critical", 0),
+        }
+
+    def _what_changed(
+        self,
+        current: list[dict[str, Any]],
+        previous: list[dict[str, Any]],
+        deltas: dict[str, int],
+    ) -> list[str]:
+        changes: list[str] = []
+        current_commands = Counter(
+            event["command"]
+            for event in current
+            if event["event_type"] == EventName.COMMAND_USED and event.get("command")
+        )
+        previous_commands = Counter(
+            event["command"]
+            for event in previous
+            if event["event_type"] == EventName.COMMAND_USED and event.get("command")
+        )
+
+        for metric, label in (
+            ("errors", "Errors"),
+            ("rate_limits", "Rate limits"),
+            ("rejections", "Rejected commands"),
+            ("sessions", "Ping sessions"),
+            ("commands", "Command usage"),
+        ):
+            delta = deltas.get(metric, 0)
+            if delta:
+                direction = "increased" if delta > 0 else "decreased"
+                changes.append(f"{label} {direction} by {abs(delta)} vs the previous window.")
+
+        for command, count in current_commands.most_common(3):
+            previous_count = previous_commands.get(command, 0)
+            if count >= 3 and count > previous_count:
+                changes.append(f"`/{command}` is up by {count - previous_count} use(s).")
+
+        if not changes:
+            changes.append("No material movement from the previous window.")
+        return changes[:5]
+
     def _status_from_score(self, score: int) -> str:
         if score >= 90:
             return "healthy"
@@ -407,6 +629,28 @@ class OperationalIntelligenceService:
                 "degradation_penalty": 0,
             },
             "timeline": [],
+            "trend": {
+                "current": self._event_window_summary([]),
+                "previous": self._event_window_summary([]),
+                "deltas": {
+                    "events": 0,
+                    "commands": 0,
+                    "sessions": 0,
+                    "rate_limits": 0,
+                    "rejections": 0,
+                    "errors": 0,
+                },
+                "direction": "steady",
+                "what_changed": ["No material movement from the previous window."],
+            },
+            "command_intelligence": {
+                "total_command_uses": 0,
+                "top_commands": [],
+                "dominant_command": None,
+                "pressure_by_command": [],
+                "noisy_actors": [],
+            },
+            "recommendations": ["No immediate action needed; keep normal monitoring."],
             "guild_ids": [],
         }
 
