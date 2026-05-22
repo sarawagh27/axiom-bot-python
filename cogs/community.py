@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -22,12 +23,63 @@ from util.time_utils import format_duration, parse_duration
 
 
 POLL_EMOJIS = ("1\ufe0f\u20e3", "2\ufe0f\u20e3", "3\ufe0f\u20e3", "4\ufe0f\u20e3")
+AFK_REASON_LIMIT = 140
+AFK_REPLY_COOLDOWN_SECONDS = 90
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
 class AfkStatus:
-    message: str
+    reason: str | None
     since: float
+
+
+def _clean_afk_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    cleaned = _WHITESPACE_RE.sub(" ", reason.strip())
+    if not cleaned:
+        return None
+    if len(cleaned) <= AFK_REASON_LIMIT:
+        return cleaned
+    return f"{cleaned[: AFK_REASON_LIMIT - 1].rstrip()}..."
+
+
+def _format_afk_duration(since: float, now: float | None = None) -> str:
+    elapsed = max(0, int((now or time.time()) - since))
+    if elapsed < 60:
+        return "<1m"
+
+    days, remainder = divmod(elapsed, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and len(parts) < 2:
+        parts.append(f"{minutes}m")
+    return " ".join(parts[:2])
+
+
+def _format_afk_set_confirmation(status: AfkStatus) -> str:
+    if status.reason:
+        return f"You're now AFK.\nReason: {status.reason}"
+    return "You're now AFK."
+
+
+def _format_afk_removed(status: AfkStatus, now: float | None = None) -> str:
+    return f"Welcome back.\nAFK removed after {_format_afk_duration(status.since, now)}."
+
+
+def _format_afk_mention(display_name: str, status: AfkStatus, now: float | None = None) -> str:
+    duration = _format_afk_duration(status.since, now)
+    line = f"{display_name} is currently away - back in {duration}."
+    if status.reason:
+        line = f"{line}\nReason: {status.reason}"
+    return line
 
 
 def _record_success(
@@ -118,6 +170,7 @@ class CommunityCog(commands.Cog, name="Community"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._afk: dict[tuple[int, int], AfkStatus] = {}
+        self._afk_reply_cooldowns: dict[tuple[int, int, int], float] = {}
         self._reminders: set[asyncio.Task] = set()
 
     @app_commands.command(name="server", description="View this server's operational profile.")
@@ -427,22 +480,27 @@ class CommunityCog(commands.Cog, name="Community"):
                 await channel.send(content=user.mention, embed=embed)
 
     @app_commands.command(name="afk", description="Set an AFK status for this server.")
-    @app_commands.describe(message="Short AFK message.")
+    @app_commands.describe(reason="Optional short reason.")
     @app_commands.guild_only()
     async def afk(
         self,
         interaction: discord.Interaction,
-        message: str = "AFK",
+        reason: str | None = None,
     ) -> None:
-        self._afk[(interaction.guild_id, interaction.user.id)] = AfkStatus(
-            message=message[:180],
+        status = AfkStatus(
+            reason=_clean_afk_reason(reason),
             since=time.time(),
         )
-        embed = make_embed("AFK Enabled", status="watch")
-        embed.add_field(name="Message", value=message[:180], inline=False)
-        embed.add_field(name="Behavior", value="Axiom will notify people who mention you.", inline=False)
-        _record_success("afk", interaction)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        self._afk[(interaction.guild_id, interaction.user.id)] = status
+        _record_success(
+            "afk",
+            interaction,
+            metadata={"has_reason": status.reason is not None},
+        )
+        await interaction.response.send_message(
+            _format_afk_set_confirmation(status),
+            ephemeral=True,
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -451,32 +509,55 @@ class CommunityCog(commands.Cog, name="Community"):
 
         key = (message.guild.id, message.author.id)
         if key in self._afk:
-            self._afk.pop(key, None)
+            status = self._afk.pop(key)
+            self._clear_afk_reply_cooldowns(message.guild.id, message.author.id)
             try:
                 await message.channel.send(
-                    f"{message.author.mention} welcome back. AFK cleared.",
+                    _format_afk_removed(status),
                     delete_after=8,
                 )
             except discord.HTTPException:
                 pass
 
-        mentioned = [
-            member for member in message.mentions
-            if (message.guild.id, member.id) in self._afk
-        ]
+        mentioned = self._mentionable_afk_members(message)
         if not mentioned:
             return
 
         lines = []
+        now = time.time()
         for member in mentioned[:3]:
             status = self._afk[(message.guild.id, member.id)]
-            lines.append(
-                f"{member.display_name} is AFK since <t:{int(status.since)}:R>: {status.message}"
-            )
+            lines.append(_format_afk_mention(member.display_name, status, now))
         try:
-            await message.reply("\n".join(lines), mention_author=False, delete_after=20)
+            await message.reply("\n\n".join(lines), mention_author=False, delete_after=20)
         except discord.HTTPException:
             pass
+
+    def _mentionable_afk_members(self, message: discord.Message) -> list[discord.Member]:
+        now = time.time()
+        members: list[discord.Member] = []
+        for member in message.mentions:
+            afk_key = (message.guild.id, member.id)
+            if afk_key not in self._afk or member.id == message.author.id:
+                continue
+            cooldown_key = (message.guild.id, message.author.id, member.id)
+            if self._afk_reply_cooldowns.get(cooldown_key, 0) > now:
+                continue
+            self._afk_reply_cooldowns[cooldown_key] = now + AFK_REPLY_COOLDOWN_SECONDS
+            members.append(member)
+        self._afk_reply_cooldowns = {
+            key: expires_at
+            for key, expires_at in self._afk_reply_cooldowns.items()
+            if expires_at > now
+        }
+        return members
+
+    def _clear_afk_reply_cooldowns(self, guild_id: int, user_id: int) -> None:
+        self._afk_reply_cooldowns = {
+            key: expires_at
+            for key, expires_at in self._afk_reply_cooldowns.items()
+            if not (key[0] == guild_id and key[2] == user_id)
+        }
 
 
 async def setup(bot: commands.Bot) -> None:
