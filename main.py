@@ -19,9 +19,13 @@ from core.database import db
 async def health_check(request):
     return web.Response(text="OK")
 
+async def index(request):
+    return web.Response(text="Axiom Bot is running and healthy.")
+
 
 async def start_web_server():
     app = web.Application()
+    app.router.add_get('/', index)
     app.router.add_get('/health', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
