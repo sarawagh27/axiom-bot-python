@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from util.discord_ui import badge, join_lines
+from util.discord_ui import join_lines, status_label
 
 
 SEVERITY_TONE = {
@@ -36,7 +36,7 @@ def window_label(window_minutes: int) -> str:
 def severity_label(value: str) -> str:
     normalized = value.lower()
     tone = SEVERITY_TONE.get(normalized, normalized.title())
-    return f"{badge(normalized)} **{tone}**"
+    return f"{status_label(normalized).split(' ', 1)[0]} **{tone}**"
 
 
 def pressure_label(score: int) -> str:

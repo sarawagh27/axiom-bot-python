@@ -1,8 +1,4 @@
-"""
-cogs/massghost.py — /massghost command.
-Ghost pings multiple users at the same time.
-Usage: /massghost targets:@user1 @user2 @user3 count:2
-"""
+"""Multi-target disappearing ping command."""
 
 from __future__ import annotations
 
@@ -15,23 +11,23 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.guild_config import guild_config_manager
+from util.discord_ui import error_text, success_text, watch_text
 from util.permissions import bot_has_permissions
 
 log = logging.getLogger("axiom.cogs.massghost")
 
 
 class MassGhostCog(commands.Cog, name="MassGhost"):
-
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     @app_commands.command(
         name="massghost",
-        description="Ghost ping multiple users at once.",
+        description="Send disappearing pings to multiple users.",
     )
     @app_commands.describe(
-        targets="Mention the users to ghost ping e.g. @user1 @user2 @user3 (max 20)",
-        count="How many times to ghost ping each of them (1–5)",
+        targets="Mention users to ping. Maximum 20.",
+        count="How many times to ping each user (1-20)",
     )
     @app_commands.guild_only()
     @bot_has_permissions(send_messages=True, manage_messages=True)
@@ -42,51 +38,39 @@ class MassGhostCog(commands.Cog, name="MassGhost"):
         count: app_commands.Range[int, 1, 20] = 1,
     ) -> None:
         guild_id = interaction.guild_id
-
-        # Guild feature check
         guild_cfg = guild_config_manager.get(guild_id)
         if not guild_cfg.pingbomb_enabled:
-            await interaction.response.send_message(
-                "❌ Axiom commands are disabled on this server.", ephemeral=True
-            )
+            await interaction.response.send_message(error_text("Axiom commands are disabled on this server."), ephemeral=True)
             return
 
-        # Channel restriction
         if not guild_config_manager.is_channel_allowed(guild_id, interaction.channel_id):
-            allowed = ", ".join(f"<#{c}>" for c in guild_cfg.allowed_channel_ids)
-            await interaction.response.send_message(
-                f"❌ This command can only be used in: {allowed}", ephemeral=True
-            )
+            allowed = ", ".join(f"<#{channel_id}>" for channel_id in guild_cfg.allowed_channel_ids)
+            await interaction.response.send_message(error_text(f"This command can only be used in: {allowed}"), ephemeral=True)
             return
 
-        # Parse mentioned user IDs from the targets string
         raw_ids = re.findall(r"<@!?(\d+)>", targets)
-
         if not raw_ids:
             await interaction.response.send_message(
-                "❌ No valid mentions found. Use `@username` to mention users.",
+                error_text("No valid mentions found. Mention users directly."),
                 ephemeral=True,
             )
             return
 
-        # Deduplicate and limit to 5
         seen = []
-        for uid in raw_ids:
-            if uid not in seen:
-                seen.append(uid)
+        for user_id in raw_ids:
+            if user_id not in seen:
+                seen.append(user_id)
         raw_ids = seen[:20]
 
-        # Resolve members, skip bots and self
         members: list[discord.Member] = []
         skipped: list[str] = []
-
-        for uid in raw_ids:
-            member = interaction.guild.get_member(int(uid))
+        for user_id in raw_ids:
+            member = interaction.guild.get_member(int(user_id))
             if member is None:
-                skipped.append(f"<@{uid}> (not found)")
+                skipped.append(f"<@{user_id}> (not found)")
                 continue
             if member.id == interaction.user.id:
-                skipped.append(f"{member.mention} (can't ghost ping yourself)")
+                skipped.append(f"{member.mention} (self)")
                 continue
             if member.bot:
                 skipped.append(f"{member.mention} (bot)")
@@ -95,50 +79,40 @@ class MassGhostCog(commands.Cog, name="MassGhost"):
 
         if not members:
             await interaction.response.send_message(
-                "❌ No valid targets after filtering. Make sure you're not only mentioning bots or yourself.",
+                error_text("No valid targets after filtering."),
                 ephemeral=True,
             )
             return
 
-        # Acknowledge to invoker
-        names = ", ".join(m.mention for m in members)
+        names = ", ".join(member.mention for member in members)
         await interaction.response.send_message(
-            f"👻 Mass ghost pinging {names} — **{count}x** each...",
+            watch_text(f"Sending **{count}x** disappearing pings to {names}."),
             ephemeral=True,
         )
 
         channel = interaction.channel
         total_sent = 0
-
         for _ in range(count):
-            # Fire all targets simultaneously in this round
-            tasks = []
-            for member in members:
-                tasks.append(_ghost_ping_one(channel, member))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            total_sent += sum(1 for r in results if r is True)
-
-            # Small gap between rounds if count > 1
+            results = await asyncio.gather(
+                *(_ghost_ping_one(channel, member) for member in members),
+                return_exceptions=True,
+            )
+            total_sent += sum(1 for result in results if result is True)
             if count > 1:
                 await asyncio.sleep(0.8)
 
-        # Final confirmation
-        summary = f"👻 Done! Sent **{count}x** ghost ping(s) to **{len(members)}** user(s)."
+        summary = success_text(f"Sent **{total_sent}** disappearing ping(s) to **{len(members)}** user(s).")
         if skipped:
-            summary += f"\n⚠️ Skipped: {', '.join(skipped)}"
+            summary += f"\nSkipped: {', '.join(skipped)}"
 
         await interaction.followup.send(summary, ephemeral=True)
-
         log.info(
             "/massghost: guild=%s invoker=%s targets=%s count=%s",
-            guild_id, interaction.user.id,
-            [m.id for m in members], count,
+            guild_id, interaction.user.id, [member.id for member in members], count,
         )
 
 
 async def _ghost_ping_one(channel: discord.TextChannel, member: discord.Member) -> bool:
-    """Send and immediately delete a single ping. Returns True on success."""
     try:
         msg = await channel.send(
             member.mention,

@@ -9,9 +9,26 @@ import logging.handlers
 import os
 import sys
 
+from aiohttp import web
+
 from config import CONFIG
 from bot.client import AxiomBot
 from core.database import db
+
+
+async def health_check(request):
+    return web.Response(text="OK")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.getLogger("axiom.main").info(f"Web server started on port {port}")
 
 
 def setup_logging() -> None:
@@ -46,6 +63,8 @@ async def main() -> None:
     setup_logging()
     log = logging.getLogger("axiom.main")
     log.info("Axiom starting up...")
+
+    await start_web_server()
 
     # Connect database
     db.connect()

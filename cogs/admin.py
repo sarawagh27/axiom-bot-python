@@ -1,7 +1,4 @@
-"""
-cogs/admin.py — Admin-only slash commands for Axiom.
-Force-stop sessions, inspect state, flush cooldowns.
-"""
+"""Admin-only operational controls."""
 
 from __future__ import annotations
 
@@ -11,9 +8,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.session_manager import session_manager
 from core.cooldown_manager import cooldown_manager
+from core.session_manager import session_manager
 from services.audit_service import audit_service
+from util.discord_ui import AXIOM_OPS_FOOTER, make_embed, success_text
 from util.permissions import is_admin
 from util.time_utils import format_duration
 
@@ -21,58 +19,49 @@ log = logging.getLogger("axiom.cogs.admin")
 
 
 class AdminCog(commands.Cog, name="Admin"):
-    """Administrative commands (requires Administrator or Manage Guild)."""
+    """Administrative commands for server operators."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # ------------------------------------------------------------------
-    # /admin_sessions — list all active sessions in the guild
-    # ------------------------------------------------------------------
-
     @app_commands.command(
         name="admin_sessions",
-        description="[Admin] List all active pingbomb sessions in this guild.",
+        description="[Admin] List all active ping sessions in this guild.",
     )
     @app_commands.guild_only()
     @is_admin()
     async def admin_sessions(self, interaction: discord.Interaction) -> None:
         sessions = [
-            s for s in session_manager.active_sessions()
-            if s.guild_id == interaction.guild_id
+            session for session in session_manager.active_sessions()
+            if session.guild_id == interaction.guild_id
         ]
 
         if not sessions:
-            await interaction.response.send_message(
-                "No active sessions in this guild.", ephemeral=True
-            )
+            await interaction.response.send_message("No active ping sessions in this guild.", ephemeral=True)
             return
 
-        embed = discord.Embed(
-            title=f"🔍 Active Sessions ({len(sessions)})",
-            colour=discord.Colour.blurple(),
+        embed = make_embed(
+            "Active Sessions",
+            f"Tracking **{len(sessions)}** active session(s).",
+            footer=AXIOM_OPS_FOOTER,
         )
-        for s in sessions:
+        for session in sessions:
             embed.add_field(
-                name=f"User <@{s.user_id}>",
+                name=f"User <@{session.user_id}>",
                 value=(
-                    f"→ Target: <@{s.target_id}>\n"
-                    f"→ Progress: {s.pings_sent}/{s.count}\n"
-                    f"→ State: {s.state.name}\n"
-                    f"→ Elapsed: {format_duration(s.elapsed)}"
+                    f"Target: <@{session.target_id}>\n"
+                    f"Progress: **{session.pings_sent}/{session.count}**\n"
+                    f"State: **{session.state.name}**\n"
+                    f"Elapsed: **{format_duration(session.elapsed)}**"
                 ),
                 inline=False,
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ------------------------------------------------------------------
-    # /admin_stop_session — force-stop one user's session
-    # ------------------------------------------------------------------
-
     @app_commands.command(
         name="admin_stop_session",
-        description="[Admin] Force-stop a user's active pingbomb session.",
+        description="[Admin] Force-stop a user's active ping session.",
     )
     @app_commands.describe(user="The member whose session to stop")
     @app_commands.guild_only()
@@ -95,20 +84,18 @@ class AdminCog(commands.Cog, name="Admin"):
                 interaction.user.id, user.id, interaction.guild_id,
             )
             await interaction.response.send_message(
-                f"✅ Stopped session for {user.mention}.", ephemeral=True
+                success_text(f"Stopped session for {user.mention}."),
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message(
-                f"{user.mention} has no active session.", ephemeral=True
+                f"{user.mention} has no active session.",
+                ephemeral=True,
             )
-
-    # ------------------------------------------------------------------
-    # /admin_stop_all — force-stop ALL sessions in the guild
-    # ------------------------------------------------------------------
 
     @app_commands.command(
         name="admin_stop_all",
-        description="[Admin] Force-stop ALL active pingbomb sessions in this guild.",
+        description="[Admin] Force-stop all active ping sessions in this guild.",
     )
     @app_commands.guild_only()
     @is_admin()
@@ -127,16 +114,13 @@ class AdminCog(commands.Cog, name="Admin"):
             interaction.user.id, count, interaction.guild_id,
         )
         await interaction.response.send_message(
-            f"✅ Force-stopped **{count}** session(s).", ephemeral=True
+            success_text(f"Force-stopped **{count}** session(s)."),
+            ephemeral=True,
         )
-
-    # ------------------------------------------------------------------
-    # /admin_clear_cooldown — clear a user's cooldown
-    # ------------------------------------------------------------------
 
     @app_commands.command(
         name="admin_clear_cooldown",
-        description="[Admin] Clear the pingbomb cooldown for a specific user.",
+        description="[Admin] Clear the ping session cooldown for a specific user.",
     )
     @app_commands.describe(user="The member whose cooldown to clear")
     @app_commands.guild_only()
@@ -155,20 +139,18 @@ class AdminCog(commands.Cog, name="Admin"):
 
         if cleared:
             await interaction.response.send_message(
-                f"✅ Cooldown cleared for {user.mention}.", ephemeral=True
+                success_text(f"Cooldown cleared for {user.mention}."),
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message(
-                f"{user.mention} is not on cooldown.", ephemeral=True
+                f"{user.mention} is not on cooldown.",
+                ephemeral=True,
             )
-
-    # ------------------------------------------------------------------
-    # /admin_clear_all_cooldowns — clear all guild cooldowns
-    # ------------------------------------------------------------------
 
     @app_commands.command(
         name="admin_clear_all_cooldowns",
-        description="[Admin] Clear all pingbomb cooldowns in this guild.",
+        description="[Admin] Clear all ping session cooldowns in this guild.",
     )
     @app_commands.guild_only()
     @is_admin()
@@ -183,7 +165,8 @@ class AdminCog(commands.Cog, name="Admin"):
         )
 
         await interaction.response.send_message(
-            f"✅ Cleared **{count}** cooldown(s) in this guild.", ephemeral=True
+            success_text(f"Cleared **{count}** cooldown(s) in this guild."),
+            ephemeral=True,
         )
 
 

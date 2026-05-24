@@ -1,8 +1,4 @@
-"""
-bot/error_handler.py — Global slash command error handler.
-Catches all command errors and sends user-friendly messages.
-Also logs every error with full context for debugging.
-"""
+"""Global slash command error handling for Axiom."""
 
 from __future__ import annotations
 
@@ -14,11 +10,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from services.operational_events import operational_event_recorder
+from util.discord_ui import error_text, watch_text
+from util.time_utils import format_duration
 
 log = logging.getLogger("axiom.error_handler")
 
 
 class ErrorHandler(commands.Cog):
+    """Converts command failures into calm, Discord-native responses."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -29,11 +28,8 @@ class ErrorHandler(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-
-        # Unwrap the original error if wrapped
         original = getattr(error, "original", error)
 
-        # Log full traceback for debugging
         log.error(
             "Command error in /%s (guild=%s user=%s): %s\n%s",
             interaction.command.name if interaction.command else "unknown",
@@ -49,28 +45,20 @@ class ErrorHandler(commands.Cog):
             error=original,
         )
 
-        # User-friendly messages based on error type
         if isinstance(error, app_commands.CommandOnCooldown):
-            remaining = round(error.retry_after)
-            msg = f"⏳ You're on cooldown! Try again in **{remaining}s**."
-
+            msg = watch_text(f"Cooldown active. Try again in **{format_duration(error.retry_after)}**.")
         elif isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You don't have permission to use this command."
-
+            msg = error_text("You do not have permission to use this command.")
         elif isinstance(error, app_commands.BotMissingPermissions):
             missing = ", ".join(error.missing_permissions)
-            msg = f"❌ I'm missing permissions: `{missing}`"
-
+            msg = error_text(f"Axiom is missing permissions: `{missing}`")
         elif isinstance(error, app_commands.NoPrivateMessage):
-            msg = "❌ This command can only be used in a server."
-
+            msg = error_text("This command can only be used in a server.")
         elif isinstance(error, app_commands.CheckFailure):
-            msg = "❌ You don't meet the requirements for this command."
-
+            msg = error_text("You do not meet the requirements for this command.")
         else:
-            msg = "❌ Something went wrong. Please try again."
+            msg = error_text("Something went wrong. The event was recorded for review.")
 
-        # Send response — handle both responded and unresponded interactions
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)

@@ -1,5 +1,5 @@
 """
-core/guild_config.py — Per-guild configuration manager.
+core/guild_config.py - Per-guild configuration manager.
 Now backed by SQLite via core/database.py instead of JSON.
 """
 
@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
-
 from config import CONFIG
 
 log = logging.getLogger("axiom.guild_config")

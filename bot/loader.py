@@ -1,12 +1,10 @@
 """
-bot/loader.py — Discovers and loads all cogs from the cogs/ package.
+bot/loader.py - Discovers and loads all cogs from the cogs/ package.
 """
 
-import importlib
 import logging
 import pkgutil
 
-import discord
 from discord.ext import commands
 
 import cogs
@@ -32,7 +30,7 @@ async def load_all_cogs(bot: commands.Bot) -> None:
             log.error("Failed to load cog %s: %s", ext, exc, exc_info=True)
 
     log.info(
-        "Cog loading complete — loaded: %d, failed: %d",
+        "Cog loading complete - loaded: %d, failed: %d",
         len(loaded),
         len(failed),
     )

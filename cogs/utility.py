@@ -10,7 +10,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from util.discord_ui import AxiomColor, make_embed, metric
+from util.discord_ui import (
+    AXIOM_OPS_FOOTER,
+    AxiomColor,
+    bullet_list,
+    command_line,
+    make_embed,
+    metric,
+    status_label,
+)
 
 log = logging.getLogger("axiom.cogs.utility")
 
@@ -55,9 +63,10 @@ class UtilityCog(commands.Cog, name="Utility"):
             "Gateway Ping",
             "Axiom is online and responding.",
             status=status,
+            footer=AXIOM_OPS_FOOTER,
         )
         embed.add_field(name="Latency", value=f"**{ws_latency}ms**", inline=True)
-        embed.add_field(name="Status", value=status.upper(), inline=True)
+        embed.add_field(name="Status", value=status_label(status), inline=True)
         embed.add_field(
             name="Next Step",
             value="Use `/ops status` for live server health and incident context.",
@@ -85,6 +94,7 @@ class UtilityCog(commands.Cog, name="Utility"):
             "Runtime Status",
             "Local bot runtime and current guild workload.",
             colour=AxiomColor.PRIMARY,
+            footer=AXIOM_OPS_FOOTER,
         )
         embed.add_field(name="Uptime", value=_duration_parts(uptime_s), inline=True)
         embed.add_field(name="Latency", value=f"{round(self.bot.latency * 1000)}ms", inline=True)
@@ -106,6 +116,7 @@ class UtilityCog(commands.Cog, name="Utility"):
                 "detection, health scoring, and incident memory."
             ),
             colour=AxiomColor.PRIMARY,
+            footer=AXIOM_OPS_FOOTER,
         )
         embed.add_field(
             name="Identity",
@@ -134,66 +145,102 @@ class UtilityCog(commands.Cog, name="Utility"):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="help", description="Open Axiom's command guide.")
-    async def help_command(self, interaction: discord.Interaction) -> None:
+    @app_commands.describe(category="Optional command category to focus.")
+    @app_commands.choices(category=[
+        app_commands.Choice(name="Start here", value="start"),
+        app_commands.Choice(name="Operations", value="operations"),
+        app_commands.Choice(name="Moderation", value="moderation"),
+        app_commands.Choice(name="Community", value="community"),
+        app_commands.Choice(name="Sessions", value="sessions"),
+        app_commands.Choice(name="Admin", value="admin"),
+    ])
+    async def help_command(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str] | None = None,
+    ) -> None:
         embed = make_embed(
-            "Command Center",
-            "Phase 1 focuses on fast daily-use commands and Discord-native operational intelligence.",
+            "Axiom Command Guide",
+            "A calm command surface for server operations, incident awareness, and daily moderation.",
             colour=AxiomColor.PRIMARY,
+            footer="Axiom | Use /ops status for live intelligence",
         )
 
         sections = {
-            "Start Here": [
-                ("`/help`", "Command guide"),
-                ("`/ping`", "Gateway latency"),
-                ("`/status`", "Runtime snapshot"),
-                ("`/info`", "About Axiom"),
+            "start": ("Start Here", [
+                ("help", "Command guide"),
+                ("ping", "Gateway latency"),
+                ("status", "Runtime snapshot"),
+                ("info", "About Axiom"),
             ],
-            "Server Intelligence": [
-                ("`/server`", "Server profile"),
-                ("`/userinfo`", "Member profile"),
-                ("`/avatar`", "Avatar viewer"),
-                ("`/stats`", "Usage analytics"),
+            ),
+            "server": ("Server Intelligence", [
+                ("server", "Server profile"),
+                ("userinfo", "Member profile"),
+                ("avatar", "Avatar viewer"),
+                ("stats", "Usage analytics"),
             ],
-            "Operations": [
-                ("`/ops status`", "Health, incidents, and risk signals"),
-                ("`/ops report`", "Operational summary and memory"),
-                ("`/ops anomalies`", "Suspicious activity detection"),
-                ("`/ops incidents`", "Active incident queue"),
+            ),
+            "operations": ("Operations", [
+                ("ops status", "Health, incidents, and pressure"),
+                ("ops report", "Operational digest and memory"),
+                ("ops anomalies", "Suspicious activity detection"),
+                ("ops incidents", "Prioritized incident queue"),
             ],
-            "Moderation": [
-                ("`/warn`", "Record a warning"),
-                ("`/mute`", "Timeout a member"),
-                ("`/ban`", "Ban a member"),
-                ("`/purge`", "Clean recent messages"),
+            ),
+            "moderation": ("Moderation", [
+                ("warn", "Record a warning"),
+                ("mute", "Timeout a member"),
+                ("ban", "Ban a member"),
+                ("purge", "Clean recent messages"),
             ],
-            "Community": [
-                ("`/poll`", "Create a reaction poll"),
-                ("`/remind`", "Set a reminder"),
-                ("`/afk`", "Set AFK status"),
-                ("`/echo`", "Send a message through Axiom"),
+            ),
+            "community": ("Community", [
+                ("poll", "Create a reaction poll"),
+                ("remind", "Set a reminder"),
+                ("afk", "Set AFK status"),
+                ("echo", "Send a message through Axiom"),
             ],
-            "Session Tools": [
-                ("`/pingbomb`", "Controlled ping session"),
-                ("`/pingbomb_status`", "Your active session"),
-                ("`/ghostping`", "Single ghost ping"),
-                ("`/massghost`", "Multi-target ghost ping"),
+            ),
+            "sessions": ("Session Tools", [
+                ("pingbomb", "Controlled ping session"),
+                ("pingbomb_status", "Your active session"),
+                ("ghostping", "Single ghost ping"),
+                ("massghost", "Multi-target ghost ping"),
             ],
-            "Settings and Admin": [
-                ("`/settings`", "Server configuration"),
-                ("`/admin_sessions`", "Active sessions"),
-                ("`/admin_stop_all`", "Force-stop all sessions"),
-                ("`/admin_clear_all_cooldowns`", "Clear cooldowns"),
+            ),
+            "admin": ("Settings and Admin", [
+                ("settings", "Server configuration"),
+                ("admin_sessions", "Active sessions"),
+                ("admin_stop_all", "Force-stop all sessions"),
+                ("admin_clear_all_cooldowns", "Clear cooldowns"),
             ],
+            ),
         }
 
-        for section, commands_list in sections.items():
+        visible = sections.items()
+        if category:
+            selected = {category.value}
+            if category.value == "start":
+                selected.add("server")
+            visible = [(key, value) for key, value in sections.items() if key in selected]
+
+        for _, (section, commands_list) in visible:
             embed.add_field(
                 name=section,
-                value="\n".join(f"{name} - {description}" for name, description in commands_list),
+                value="\n".join(command_line(name, description) for name, description in commands_list),
                 inline=False,
             )
+        embed.add_field(
+            name="Best Next Step",
+            value=bullet_list([
+                "`/ops status` for live health.",
+                "`/ops report` for a concise operational digest.",
+                "`/help category:Operations` to focus this guide.",
+            ]),
+            inline=False,
+        )
 
-        embed.set_footer(text="Axiom Operations | Use /ops status for live intelligence")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

@@ -17,7 +17,16 @@ from services.operational_events import (
     OperationalEventType,
     operational_event_recorder,
 )
-from util.discord_ui import AxiomColor, join_lines, make_embed
+from util.discord_ui import (
+    AXIOM_OPS_FOOTER,
+    AxiomColor,
+    bullet_list,
+    error_text,
+    join_lines,
+    make_embed,
+    status_label,
+    success_text,
+)
 from util.permissions import bot_has_permissions, is_moderator
 from util.time_utils import format_duration, parse_duration
 
@@ -134,13 +143,13 @@ def _moderation_block_reason(
     guild: discord.Guild,
 ) -> str | None:
     if target == actor:
-        return "You cannot use this moderation action on yourself."
+        return error_text("You cannot use this moderation action on yourself.")
     if target.bot:
-        return "Bot accounts are protected from this moderation action."
+        return error_text("Bot accounts are protected from this moderation action.")
     if _member_is_protected(actor, target, guild):
-        return "That member is protected by role hierarchy."
+        return error_text("That member is protected by role hierarchy.")
     if _bot_member_is_blocked(target, guild):
-        return "Axiom's role is not high enough to moderate that member."
+        return error_text("Axiom's role is not high enough to moderate that member.")
     return None
 
 
@@ -181,8 +190,9 @@ class CommunityCog(commands.Cog, name="Community"):
 
         embed = make_embed(
             "Server Profile",
-            f"{guild.name} operational snapshot",
+            f"{guild.name} at a glance.",
             colour=AxiomColor.PRIMARY,
+            footer=AXIOM_OPS_FOOTER,
         )
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
@@ -194,7 +204,10 @@ class CommunityCog(commands.Cog, name="Community"):
         embed.add_field(name="Boost Tier", value=f"Tier {guild.premium_tier}", inline=True)
         embed.add_field(
             name="Operational Read",
-            value="Use `/ops status` for live health, incident, and anomaly context.",
+            value=bullet_list([
+                "`/ops status` for live health.",
+                "`/ops report` for memory, pressure, and recommendations.",
+            ]),
             inline=False,
         )
         _record_success("server", interaction)
@@ -215,6 +228,7 @@ class CommunityCog(commands.Cog, name="Community"):
             "User Profile",
             _user_label(member),
             colour=member.colour if member.colour.value else AxiomColor.PRIMARY,
+            footer=AXIOM_OPS_FOOTER,
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(name="Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "Unknown", inline=True)
@@ -223,7 +237,7 @@ class CommunityCog(commands.Cog, name="Community"):
         embed.add_field(name="Permissions", value=_format_permissions(member), inline=False)
         embed.add_field(
             name="Status",
-            value="Bot account" if member.bot else "Human member",
+            value=status_label("watch") if member.bot else status_label("healthy"),
             inline=True,
         )
         _record_success("userinfo", interaction, target=member)
@@ -274,7 +288,7 @@ class CommunityCog(commands.Cog, name="Community"):
         except discord.HTTPException:
             dm_status = "DM unavailable"
 
-        embed = make_embed("Warning Issued", status="warning")
+        embed = make_embed("Warning Recorded", "Moderation action saved to operational history.", status="warning")
         embed.add_field(name="Member", value=_user_label(member), inline=False)
         embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Delivery", value=dm_status, inline=True)
@@ -297,14 +311,14 @@ class CommunityCog(commands.Cog, name="Community"):
         perms = interaction.user.guild_permissions
         if not any([perms.administrator, perms.manage_guild, perms.moderate_members]):
             await interaction.response.send_message(
-                "You need Moderate Members to use this command.",
+                error_text("You need Moderate Members to use this command."),
                 ephemeral=True,
             )
             return
         seconds = parse_duration(duration)
         if seconds is None or seconds <= 0 or seconds > 28 * 24 * 3600:
             await interaction.response.send_message(
-                "Use a duration between 1s and 28d, such as `10m` or `2h`.",
+                error_text("Use a duration between 1s and 28d, such as `10m` or `2h`."),
                 ephemeral=True,
             )
             return
@@ -323,7 +337,7 @@ class CommunityCog(commands.Cog, name="Community"):
         )
         _record_success("mute", interaction, target=member, metadata={"duration_seconds": seconds})
 
-        embed = make_embed("Member Muted", status="warning")
+        embed = make_embed("Member Timed Out", "Timeout applied and recorded.", status="warning")
         embed.add_field(name="Member", value=_user_label(member), inline=False)
         embed.add_field(name="Duration", value=format_duration(seconds), inline=True)
         embed.add_field(name="Expires", value=f"<t:{int(until.timestamp())}:R>", inline=True)
@@ -345,7 +359,10 @@ class CommunityCog(commands.Cog, name="Community"):
         guild = interaction.guild
         assert guild is not None
         if not interaction.user.guild_permissions.ban_members:
-            await interaction.response.send_message("You need Ban Members to use this command.", ephemeral=True)
+            await interaction.response.send_message(
+                error_text("You need Ban Members to use this command."),
+                ephemeral=True,
+            )
             return
         block_reason = _moderation_block_reason(interaction.user, member, guild)
         if block_reason:
@@ -361,7 +378,7 @@ class CommunityCog(commands.Cog, name="Community"):
         )
         _record_success("ban", interaction, target=member, severity=OperationalEventSeverity.WARNING)
 
-        embed = make_embed("Member Banned", status="critical")
+        embed = make_embed("Member Banned", "Ban applied and recorded.", status="critical")
         embed.add_field(name="Member", value=_user_label(member), inline=False)
         embed.add_field(name="Message Cleanup", value=f"{delete_message_days} day(s)", inline=True)
         embed.add_field(name="Reason", value=reason, inline=False)
@@ -380,7 +397,7 @@ class CommunityCog(commands.Cog, name="Community"):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.followup.send("Purge can only run in text channels.", ephemeral=True)
+            await interaction.followup.send(error_text("Purge can only run in text channels."), ephemeral=True)
             return
         deleted = await interaction.channel.purge(limit=amount, reason=reason)
         operational_event_recorder.record_admin_action(
@@ -391,7 +408,7 @@ class CommunityCog(commands.Cog, name="Community"):
         )
         _record_success("purge", interaction, metadata={"amount": len(deleted)})
 
-        embed = make_embed("Messages Purged", status="success")
+        embed = make_embed("Messages Purged", success_text("Channel cleanup complete."), status="success")
         embed.add_field(name="Channel", value=interaction.channel.mention, inline=True)
         embed.add_field(name="Deleted", value=str(len(deleted)), inline=True)
         embed.add_field(name="Reason", value=reason, inline=False)
@@ -408,7 +425,10 @@ class CommunityCog(commands.Cog, name="Community"):
     ) -> None:
         choices = [item.strip() for item in options.split("|") if item.strip()]
         if len(choices) < 2 or len(choices) > 4:
-            await interaction.response.send_message("Polls need 2-4 choices separated by `|`.", ephemeral=True)
+            await interaction.response.send_message(
+                error_text("Polls need 2-4 choices separated by `|`."),
+                ephemeral=True,
+            )
             return
 
         embed = make_embed("Poll", question, colour=AxiomColor.PRIMARY)
@@ -420,7 +440,7 @@ class CommunityCog(commands.Cog, name="Community"):
             ),
             inline=False,
         )
-        embed.set_footer(text=f"Poll by {interaction.user.display_name}")
+        embed.set_footer(text=f"Axiom | Poll by {interaction.user.display_name}")
         await interaction.response.send_message(embed=embed)
         message = await interaction.original_response()
         for emoji in POLL_EMOJIS[:len(choices)]:
@@ -438,13 +458,13 @@ class CommunityCog(commands.Cog, name="Community"):
         seconds = parse_duration(duration)
         if seconds is None or seconds <= 0 or seconds > 7 * 24 * 3600:
             await interaction.response.send_message(
-                "Use a reminder duration between 1s and 7d, such as `15m` or `2h`.",
+                error_text("Use a reminder duration between 1s and 7d, such as `15m` or `2h`."),
                 ephemeral=True,
             )
             return
 
         due_at = int(time.time() + seconds)
-        embed = make_embed("Reminder Set", status="success")
+        embed = make_embed("Reminder Set", success_text("I will remind you quietly."), status="success")
         embed.add_field(name="When", value=f"<t:{due_at}:R>", inline=True)
         embed.add_field(name="Note", value=note, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)

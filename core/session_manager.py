@@ -1,6 +1,6 @@
 """
-core/session_manager.py — Singleton registry that manages all active Sessions.
-Keyed by (guild_id, user_id) — one active session per user per guild.
+core/session_manager.py - Singleton registry that manages all active Sessions.
+Keyed by (guild_id, user_id) - one active session per user per guild.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from core.session_model import Session, SessionState
+from core.session_model import Session
 
 log = logging.getLogger("axiom.session_manager")
 
