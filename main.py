@@ -11,22 +11,30 @@ import sys
 
 from aiohttp import web
 
-from config import CONFIG
 from bot.client import AxiomBot
+from config import CONFIG
 from core.database import db
 
 
 async def health_check(request):
-    return web.Response(text="OK")
+    return web.json_response(
+        {
+            "service": "axiom-bot-python",
+            "status": "ok",
+            "message": "Axiom is running. Discord commands are the primary interface.",
+        }
+    )
 
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get('/health', health_check)
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    app.router.add_get("/ping", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, '0.0.0.0', port)
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logging.getLogger("axiom.main").info(f"Web server started on port {port}")
 
