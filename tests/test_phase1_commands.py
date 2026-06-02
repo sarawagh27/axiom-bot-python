@@ -36,11 +36,23 @@ class Phase1CommandRegistrationTest(unittest.TestCase):
                 "ban",
                 "purge",
                 "poll",
+                "reminder",
+                "timezone",
                 "remind",
                 "afk",
             },
             command_names,
         )
+
+    def test_reminder_groups_have_expected_subcommands(self) -> None:
+        groups = {
+            command.name: command
+            for command in CommunityCog.__cog_app_commands__
+            if command.name in {"reminder", "timezone"}
+        }
+
+        self.assertEqual({"add", "list", "remove", "clear"}, {command.name for command in groups["reminder"].commands})
+        self.assertEqual({"set", "view", "reset"}, {command.name for command in groups["timezone"].commands})
 
     def test_utility_commands_are_registered(self) -> None:
         command_names = {

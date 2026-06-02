@@ -151,6 +151,33 @@ class Database:
                 FOREIGN KEY (incident_id) REFERENCES incidents (incident_id),
                 FOREIGN KEY (event_id) REFERENCES operational_events (id)
             );
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id     INTEGER,
+                channel_id   INTEGER,
+                user_id      INTEGER NOT NULL,
+                note         TEXT    NOT NULL,
+                due_at       INTEGER NOT NULL,
+                timezone     TEXT    NOT NULL DEFAULT 'UTC',
+                source       TEXT    NOT NULL DEFAULT '',
+                created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+                delivered_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_user_due
+                ON reminders (user_id, due_at)
+                WHERE delivered_at IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_reminders_pending_due
+                ON reminders (due_at)
+                WHERE delivered_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS user_timezones (
+                user_id    INTEGER PRIMARY KEY,
+                timezone   TEXT    NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+            );
         """)
         self._ensure_operational_events_schema()
         self._conn.commit()
@@ -476,6 +503,115 @@ class Database:
             }
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Reminders
+    # ------------------------------------------------------------------
+
+    def create_reminder(
+        self,
+        *,
+        user_id: int,
+        guild_id: Optional[int],
+        channel_id: Optional[int],
+        note: str,
+        due_at: int,
+        timezone: str,
+        source: str,
+    ) -> dict[str, Any]:
+        row = self._conn.execute("""
+            INSERT INTO reminders (
+                guild_id, channel_id, user_id, note, due_at, timezone, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING id, guild_id, channel_id, user_id, note, due_at,
+                      timezone, source, created_at
+        """, (guild_id, channel_id, user_id, note, due_at, timezone, source)).fetchone()
+        self._conn.commit()
+        return dict(row)
+
+    def list_reminders(self, user_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT id, guild_id, channel_id, user_id, note, due_at, timezone, source, created_at
+            FROM reminders
+            WHERE user_id = ? AND delivered_at IS NULL
+            ORDER BY due_at ASC, id ASC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_pending_reminders(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("""
+            SELECT id, guild_id, channel_id, user_id, note, due_at, timezone, source, created_at
+            FROM reminders
+            WHERE delivered_at IS NULL
+            ORDER BY due_at ASC, id ASC
+        """).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_reminder(self, reminder_id: int, user_id: int | None = None) -> Optional[dict[str, Any]]:
+        params: list[Any] = [reminder_id]
+        user_filter = ""
+        if user_id is not None:
+            user_filter = " AND user_id = ?"
+            params.append(user_id)
+        row = self._conn.execute(f"""
+            SELECT id, guild_id, channel_id, user_id, note, due_at, timezone, source, created_at
+            FROM reminders
+            WHERE id = ? AND delivered_at IS NULL{user_filter}
+        """, params).fetchone()
+        return dict(row) if row else None
+
+    def delete_reminder(self, reminder_id: int, user_id: int) -> Optional[dict[str, Any]]:
+        reminder = self.get_reminder(reminder_id, user_id)
+        if reminder is None:
+            return None
+        self._conn.execute(
+            "DELETE FROM reminders WHERE id = ? AND user_id = ?",
+            (reminder_id, user_id),
+        )
+        self._conn.commit()
+        return reminder
+
+    def clear_reminders(self, user_id: int) -> int:
+        cursor = self._conn.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND delivered_at IS NULL",
+            (user_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    def mark_reminder_delivered(self, reminder_id: int, *, delivered_at: Optional[int] = None) -> None:
+        self._conn.execute(
+            "UPDATE reminders SET delivered_at = ? WHERE id = ?",
+            (delivered_at or int(time.time()), reminder_id),
+        )
+        self._conn.commit()
+
+    def set_user_timezone(self, user_id: int, timezone_name: str) -> None:
+        self._conn.execute("""
+            INSERT INTO user_timezones (user_id, timezone, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                timezone = excluded.timezone,
+                updated_at = excluded.updated_at
+        """, (user_id, timezone_name, int(time.time())))
+        self._conn.commit()
+
+    def get_user_timezone(self, user_id: int) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT timezone FROM user_timezones WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return row["timezone"] if row else None
+
+    def reset_user_timezone(self, user_id: int) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM user_timezones WHERE user_id = ?",
+            (user_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     # ------------------------------------------------------------------
     # Incidents

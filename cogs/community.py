@@ -6,16 +6,29 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.database import db
 from services.operational_events import (
     OperationalEventSeverity,
     OperationalEventType,
     operational_event_recorder,
+)
+from services.reminders import (
+    DEFAULT_TIMEZONE,
+    ReminderParseError,
+    ReminderRecord,
+    clean_reminder_note,
+    format_confirmation,
+    format_due_label,
+    format_relative_due,
+    parse_reminder_time,
+    timezone_view,
+    normalize_timezone,
 )
 from util.discord_ui import (
     AXIOM_OPS_FOOTER,
@@ -34,6 +47,7 @@ from util.time_utils import format_duration, parse_duration
 POLL_EMOJIS = ("1\ufe0f\u20e3", "2\ufe0f\u20e3", "3\ufe0f\u20e3", "4\ufe0f\u20e3")
 AFK_REASON_LIMIT = 140
 AFK_REPLY_COOLDOWN_SECONDS = 90
+REMINDER_LIST_PAGE_SIZE = 8
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -89,6 +103,49 @@ def _format_afk_mention(display_name: str, status: AfkStatus, now: float | None 
     if status.reason:
         line = f"{line}\nReason: {status.reason}"
     return line
+
+
+def _reminder_from_row(row: dict) -> ReminderRecord:
+    return ReminderRecord(
+        id=row["id"],
+        user_id=row["user_id"],
+        guild_id=row["guild_id"],
+        channel_id=row["channel_id"],
+        note=row["note"],
+        due_at=row["due_at"],
+        timezone=row["timezone"],
+        source=row["source"],
+        created_at=row["created_at"],
+    )
+
+
+def _format_reminder_list(
+    reminders: list[ReminderRecord],
+    *,
+    timezone_name: str,
+    now: datetime | None = None,
+) -> str:
+    lines: list[str] = []
+    for index, reminder in enumerate(reminders, start=1):
+        due_at = datetime.fromtimestamp(reminder.due_at, UTC)
+        if (due_at - (now or datetime.now(UTC))).total_seconds() < 24 * 3600:
+            when = format_relative_due(due_at, now=now)
+        else:
+            when = format_due_label(due_at, timezone_name, now=now)
+        lines.append(f"{index}. {reminder.note}\n   ID {reminder.id} - {when}")
+    return "\n\n".join(lines)
+
+
+def _reminder_time_error() -> str:
+    return error_text(
+        "I couldn't understand that reminder time.\n\n"
+        "Examples:\n"
+        "- 10m\n"
+        "- 2h\n"
+        "- tomorrow 5pm\n"
+        "- next monday 8pm\n"
+        "- at 10:46 PM IST"
+    )
 
 
 def _record_success(
@@ -176,11 +233,25 @@ def _format_permissions(member: discord.Member) -> str:
 class CommunityCog(commands.Cog, name="Community"):
     """Polished Phase 1 Discord UX commands."""
 
+    reminder = app_commands.Group(name="reminder", description="Create and manage reminders.")
+    timezone = app_commands.Group(name="timezone", description="Set your reminder timezone.")
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._afk: dict[tuple[int, int], AfkStatus] = {}
         self._afk_reply_cooldowns: dict[tuple[int, int, int], float] = {}
-        self._reminders: set[asyncio.Task] = set()
+        self._reminders: dict[int, asyncio.Task] = {}
+
+    async def cog_load(self) -> None:
+        if db._conn is None:
+            return
+        for row in db.list_pending_reminders():
+            self._schedule_reminder(_reminder_from_row(row))
+
+    async def cog_unload(self) -> None:
+        for task in self._reminders.values():
+            task.cancel()
+        self._reminders.clear()
 
     @app_commands.command(name="server", description="View this server's operational profile.")
     @app_commands.guild_only()
@@ -447,57 +518,218 @@ class CommunityCog(commands.Cog, name="Community"):
             await message.add_reaction(emoji)
         _record_success("poll", interaction, metadata={"choice_count": len(choices)})
 
+    @reminder.command(name="add", description="Set a reminder with natural language.")
+    @app_commands.describe(when="When to remind you, like tomorrow 5pm.", about="What to remind you about.")
+    async def reminder_add(
+        self,
+        interaction: discord.Interaction,
+        when: str,
+        about: str,
+    ) -> None:
+        await self._create_reminder(interaction, when=when, about=about, command_name="reminder add")
+
+    @reminder.command(name="list", description="List your upcoming reminders.")
+    @app_commands.describe(page="Page number, if you have many reminders.")
+    async def reminder_list(
+        self,
+        interaction: discord.Interaction,
+        page: app_commands.Range[int, 1, 20] = 1,
+    ) -> None:
+        timezone_name = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
+        rows = db.list_reminders(interaction.user.id, limit=200)
+        reminders = [_reminder_from_row(row) for row in rows]
+        if not reminders:
+            await interaction.response.send_message(
+                make_embed("Upcoming Reminders", "No reminders active.", colour=AxiomColor.NEUTRAL),
+                ephemeral=True,
+            )
+            return
+
+        start = (page - 1) * REMINDER_LIST_PAGE_SIZE
+        end = start + REMINDER_LIST_PAGE_SIZE
+        page_items = reminders[start:end]
+        if not page_items:
+            await interaction.response.send_message(
+                error_text("That reminder page is empty."),
+                ephemeral=True,
+            )
+            return
+
+        embed = make_embed(
+            "Upcoming Reminders",
+            _format_reminder_list(page_items, timezone_name=timezone_name),
+            colour=AxiomColor.PRIMARY,
+        )
+        total_pages = max(1, (len(reminders) + REMINDER_LIST_PAGE_SIZE - 1) // REMINDER_LIST_PAGE_SIZE)
+        footer = f"{len(reminders)} reminder{'s' if len(reminders) != 1 else ''} active"
+        if total_pages > 1:
+            footer = f"{footer} | Page {page}/{total_pages}"
+        embed.set_footer(text=footer)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        _record_success("reminder list", interaction, metadata={"count": len(reminders)})
+
+    @reminder.command(name="remove", description="Remove one reminder by ID.")
+    @app_commands.describe(reminder_id="Reminder ID from /reminder list.")
+    @app_commands.rename(reminder_id="id")
+    async def reminder_remove(
+        self,
+        interaction: discord.Interaction,
+        reminder_id: int,
+    ) -> None:
+        removed = db.delete_reminder(reminder_id, interaction.user.id)
+        if removed is None:
+            await interaction.response.send_message(
+                error_text("I couldn't find that reminder."),
+                ephemeral=True,
+            )
+            return
+        self._cancel_reminder_task(reminder_id)
+        embed = make_embed("Reminder Removed", removed["note"], status="success")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        _record_success("reminder remove", interaction, metadata={"reminder_id": reminder_id})
+
+    @reminder.command(name="clear", description="Remove all your active reminders.")
+    async def reminder_clear(self, interaction: discord.Interaction) -> None:
+        reminders = [_reminder_from_row(row) for row in db.list_reminders(interaction.user.id, limit=500)]
+        removed_count = db.clear_reminders(interaction.user.id)
+        for reminder in reminders:
+            self._cancel_reminder_task(reminder.id)
+        await interaction.response.send_message(
+            success_text(f"Removed {removed_count} reminder{'s' if removed_count != 1 else ''}."),
+            ephemeral=True,
+        )
+        _record_success("reminder clear", interaction, metadata={"count": removed_count})
+
+    @timezone.command(name="set", description="Set your preferred reminder timezone.")
+    @app_commands.describe(timezone_name="Timezone like Asia/Kolkata, IST, UTC, or PST.")
+    @app_commands.rename(timezone_name="timezone")
+    async def timezone_set(
+        self,
+        interaction: discord.Interaction,
+        timezone_name: str,
+    ) -> None:
+        try:
+            normalized = normalize_timezone(timezone_name)
+        except ReminderParseError:
+            await interaction.response.send_message(
+                error_text("I couldn't find that timezone. Try `Asia/Kolkata`, `IST`, `UTC`, or `PST`."),
+                ephemeral=True,
+            )
+            return
+        db.set_user_timezone(interaction.user.id, normalized)
+        await interaction.response.send_message(
+            success_text(f"Timezone: {timezone_view(normalized)}"),
+            ephemeral=True,
+        )
+        _record_success("timezone set", interaction, metadata={"timezone": normalized})
+
+    @timezone.command(name="view", description="View your reminder timezone.")
+    async def timezone_view_command(self, interaction: discord.Interaction) -> None:
+        timezone_name = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
+        await interaction.response.send_message(
+            f"Timezone: {timezone_view(timezone_name)}",
+            ephemeral=True,
+        )
+        _record_success("timezone view", interaction)
+
+    @timezone.command(name="reset", description="Reset your reminder timezone to UTC.")
+    async def timezone_reset(self, interaction: discord.Interaction) -> None:
+        db.reset_user_timezone(interaction.user.id)
+        await interaction.response.send_message(
+            success_text("Timezone reset to UTC."),
+            ephemeral=True,
+        )
+        _record_success("timezone reset", interaction)
+
     @app_commands.command(name="remind", description="Set a lightweight reminder.")
-    @app_commands.describe(duration="When to remind you, like 10m or 2h.", note="Reminder text.")
+    @app_commands.describe(duration="When to remind you, like 10m or tomorrow 5pm.", note="Reminder text.")
     async def remind(
         self,
         interaction: discord.Interaction,
         duration: str,
         note: str,
     ) -> None:
-        seconds = parse_duration(duration)
-        if seconds is None or seconds <= 0 or seconds > 7 * 24 * 3600:
+        await self._create_reminder(interaction, when=duration, about=note, command_name="remind")
+
+    async def _create_reminder(
+        self,
+        interaction: discord.Interaction,
+        *,
+        when: str,
+        about: str,
+        command_name: str,
+    ) -> None:
+        note = clean_reminder_note(about)
+        if not note:
             await interaction.response.send_message(
-                error_text("Use a reminder duration between 1s and 7d, such as `15m` or `2h`."),
+                error_text("Tell me what to remind you about."),
                 ephemeral=True,
             )
             return
 
-        due_at = int(time.time() + seconds)
-        embed = make_embed("Reminder Set", success_text("I will remind you quietly."), status="success")
-        embed.add_field(name="When", value=f"<t:{due_at}:R>", inline=True)
-        embed.add_field(name="Note", value=note, inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        _record_success("remind", interaction, metadata={"duration_seconds": seconds})
+        user_timezone = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
+        try:
+            parsed = parse_reminder_time(when, user_timezone=user_timezone)
+        except ReminderParseError:
+            await interaction.response.send_message(_reminder_time_error(), ephemeral=True)
+            return
 
-        task = asyncio.create_task(
-            self._deliver_reminder(
-                interaction.user,
-                interaction.channel,
-                seconds,
-                note,
-                due_at,
-            )
+        row = db.create_reminder(
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            note=note,
+            due_at=int(parsed.due_at.timestamp()),
+            timezone=parsed.user_timezone,
+            source=parsed.source,
         )
-        self._reminders.add(task)
-        task.add_done_callback(self._reminders.discard)
+        reminder = _reminder_from_row(row)
+        self._schedule_reminder(reminder)
+
+        embed = make_embed("Reminder Set", format_confirmation(parsed), status="success")
+        embed.add_field(name="About", value=note, inline=False)
+        embed.add_field(name="ID", value=str(reminder.id), inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        _record_success(command_name, interaction, metadata={"reminder_id": reminder.id})
+
+    def _schedule_reminder(self, reminder: ReminderRecord) -> None:
+        if reminder.id in self._reminders:
+            return
+        task = asyncio.create_task(
+            self._deliver_reminder(reminder),
+            name=f"reminder-{reminder.id}",
+        )
+        self._reminders[reminder.id] = task
+        task.add_done_callback(lambda _: self._reminders.pop(reminder.id, None))
+
+    def _cancel_reminder_task(self, reminder_id: int) -> None:
+        task = self._reminders.pop(reminder_id, None)
+        if task and not task.done():
+            task.cancel()
 
     async def _deliver_reminder(
         self,
-        user: discord.abc.User,
-        channel: discord.abc.Messageable | None,
-        seconds: float,
-        note: str,
-        due_at: int,
+        reminder: ReminderRecord,
     ) -> None:
-        await asyncio.sleep(seconds)
-        embed = make_embed("Reminder Due", note, status="watch")
-        embed.add_field(name="Scheduled For", value=f"<t:{due_at}:R>", inline=True)
+        delay = max(0, reminder.due_at - int(time.time()))
+        await asyncio.sleep(delay)
+        if db.get_reminder(reminder.id) is None:
+            return
+        embed = make_embed("Reminder", reminder.note, status="watch")
+        due_at = datetime.fromtimestamp(reminder.due_at, UTC)
+        embed.add_field(
+            name="Scheduled",
+            value=format_due_label(due_at, reminder.timezone),
+            inline=True,
+        )
+        user = self.bot.get_user(reminder.user_id) or await self.bot.fetch_user(reminder.user_id)
+        channel = self.bot.get_channel(reminder.channel_id) if reminder.channel_id else None
         try:
             await user.send(embed=embed)
         except discord.HTTPException:
             if channel:
                 await channel.send(content=user.mention, embed=embed)
+        db.mark_reminder_delivered(reminder.id)
 
     @app_commands.command(name="afk", description="Set an AFK status for this server.")
     @app_commands.describe(reason="Optional short reason.")
