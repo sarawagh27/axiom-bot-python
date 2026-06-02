@@ -54,6 +54,20 @@ class Phase1CommandRegistrationTest(unittest.TestCase):
         self.assertEqual({"add", "list", "remove", "clear"}, {command.name for command in groups["reminder"].commands})
         self.assertEqual({"set", "view", "reset"}, {command.name for command in groups["timezone"].commands})
 
+    def test_reminder_remove_uses_human_option_name(self) -> None:
+        reminder_group = next(
+            command
+            for command in CommunityCog.__cog_app_commands__
+            if command.name == "reminder"
+        )
+        remove_command = next(
+            command
+            for command in reminder_group.commands
+            if command.name == "remove"
+        )
+
+        self.assertEqual(remove_command.parameters[0].display_name, "reminder")
+
     def test_utility_commands_are_registered(self) -> None:
         command_names = {
             command.name

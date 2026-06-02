@@ -23,12 +23,13 @@ from services.reminders import (
     ReminderParseError,
     ReminderRecord,
     clean_reminder_note,
-    format_confirmation,
-    format_due_label,
+    format_absolute_due,
+    format_clock,
+    format_compact_schedule,
     format_relative_due,
     parse_reminder_time,
-    timezone_view,
     normalize_timezone,
+    timezone_view,
 )
 from util.discord_ui import (
     AXIOM_OPS_FOOTER,
@@ -48,6 +49,7 @@ POLL_EMOJIS = ("1\ufe0f\u20e3", "2\ufe0f\u20e3", "3\ufe0f\u20e3", "4\ufe0f\u20e3
 AFK_REASON_LIMIT = 140
 AFK_REPLY_COOLDOWN_SECONDS = 90
 REMINDER_LIST_PAGE_SIZE = 8
+REMINDER_FOOTER = "Axiom | Reminders"
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -126,14 +128,145 @@ def _format_reminder_list(
     now: datetime | None = None,
 ) -> str:
     lines: list[str] = []
-    for index, reminder in enumerate(reminders, start=1):
+    for reminder in reminders:
         due_at = datetime.fromtimestamp(reminder.due_at, UTC)
-        if (due_at - (now or datetime.now(UTC))).total_seconds() < 24 * 3600:
-            when = format_relative_due(due_at, now=now)
-        else:
-            when = format_due_label(due_at, timezone_name, now=now)
-        lines.append(f"{index}. {reminder.note}\n   ID {reminder.id} - {when}")
+        when = format_compact_schedule(due_at, timezone_name, now=now)
+        lines.append(f"- **{reminder.note}**\n{when}")
     return "\n\n".join(lines)
+
+
+def _reminder_choice_label(reminder: ReminderRecord, timezone_name: str) -> str:
+    due_at = datetime.fromtimestamp(reminder.due_at, UTC)
+    when = format_absolute_due(due_at, timezone_name, include_timezone=False)
+    label = f"{reminder.note} - {when}"
+    return label if len(label) <= 100 else f"{label[:97].rstrip()}..."
+
+
+def _build_reminder_list_embed(
+    reminders: list[ReminderRecord],
+    *,
+    timezone_name: str,
+    page: int,
+    total_count: int,
+    now: datetime | None = None,
+) -> discord.Embed:
+    total_pages = max(1, (total_count + REMINDER_LIST_PAGE_SIZE - 1) // REMINDER_LIST_PAGE_SIZE)
+    embed = make_embed(
+        "Upcoming Reminders",
+        _format_reminder_list(reminders, timezone_name=timezone_name, now=now),
+        colour=AxiomColor.PRIMARY,
+        footer=REMINDER_FOOTER,
+    )
+    footer = f"{total_count} reminder{'s' if total_count != 1 else ''} active"
+    if total_pages > 1:
+        footer = f"{footer} - Page {page}/{total_pages}"
+    embed.set_footer(text=footer)
+    return embed
+
+
+def _build_reminder_confirmation_embed(
+    note: str,
+    due_at: datetime,
+    *,
+    user_timezone: str,
+    input_timezone: str,
+    input_timezone_label: str,
+    user_timezone_label: str,
+    used_explicit_timezone: bool,
+) -> discord.Embed:
+    embed = make_embed(
+        "\u23f0 Reminder Scheduled",
+        f"**{note}**",
+        colour=AxiomColor.SUCCESS,
+        footer=REMINDER_FOOTER,
+    )
+    embed.add_field(name="When", value=format_relative_due(due_at), inline=True)
+    if used_explicit_timezone and input_timezone != user_timezone:
+        embed.add_field(
+            name="Time Entered",
+            value=format_clock(due_at, input_timezone, label=input_timezone_label),
+            inline=True,
+        )
+        embed.add_field(
+            name="Scheduled For You",
+            value=format_clock(due_at, user_timezone, label=user_timezone_label),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Scheduled For",
+            value=format_absolute_due(due_at, user_timezone),
+            inline=True,
+        )
+    return embed
+
+
+def _build_reminder_delivery_embed(reminder: ReminderRecord) -> discord.Embed:
+    due_at = datetime.fromtimestamp(reminder.due_at, UTC)
+    embed = make_embed(
+        "\u23f0 Reminder",
+        f"You asked me to remind you:\n\n**{reminder.note}**",
+        colour=AxiomColor.PRIMARY,
+        footer=REMINDER_FOOTER,
+    )
+    embed.add_field(
+        name="Scheduled",
+        value=format_compact_schedule(due_at, reminder.timezone),
+        inline=False,
+    )
+    return embed
+
+
+class ReminderListView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        reminders: list[ReminderRecord],
+        timezone_name: str,
+        page: int,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.reminders = reminders
+        self.timezone_name = timezone_name
+        self.page = page
+        self.total_pages = max(1, (len(reminders) + REMINDER_LIST_PAGE_SIZE - 1) // REMINDER_LIST_PAGE_SIZE)
+        self._sync_buttons()
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.page = max(1, self.page - 1)
+        await self._render(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.page = min(self.total_pages, self.page + 1)
+        await self._render(interaction)
+
+    async def _render(self, interaction: discord.Interaction) -> None:
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    def _embed(self) -> discord.Embed:
+        start = (self.page - 1) * REMINDER_LIST_PAGE_SIZE
+        end = start + REMINDER_LIST_PAGE_SIZE
+        return _build_reminder_list_embed(
+            self.reminders[start:end],
+            timezone_name=self.timezone_name,
+            page=self.page,
+            total_count=len(self.reminders),
+        )
+
+    def _sync_buttons(self) -> None:
+        self.previous_page.disabled = self.page <= 1
+        self.next_page.disabled = self.page >= self.total_pages
 
 
 def _reminder_time_error() -> str:
@@ -529,48 +662,36 @@ class CommunityCog(commands.Cog, name="Community"):
         await self._create_reminder(interaction, when=when, about=about, command_name="reminder add")
 
     @reminder.command(name="list", description="List your upcoming reminders.")
-    @app_commands.describe(page="Page number, if you have many reminders.")
     async def reminder_list(
         self,
         interaction: discord.Interaction,
-        page: app_commands.Range[int, 1, 20] = 1,
     ) -> None:
         timezone_name = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
         rows = db.list_reminders(interaction.user.id, limit=200)
         reminders = [_reminder_from_row(row) for row in rows]
         if not reminders:
             await interaction.response.send_message(
-                make_embed("Upcoming Reminders", "No reminders active.", colour=AxiomColor.NEUTRAL),
+                make_embed(
+                    "Upcoming Reminders",
+                    "No reminders yet.",
+                    colour=AxiomColor.NEUTRAL,
+                    footer=REMINDER_FOOTER,
+                ),
                 ephemeral=True,
             )
             return
 
-        start = (page - 1) * REMINDER_LIST_PAGE_SIZE
-        end = start + REMINDER_LIST_PAGE_SIZE
-        page_items = reminders[start:end]
-        if not page_items:
-            await interaction.response.send_message(
-                error_text("That reminder page is empty."),
-                ephemeral=True,
-            )
-            return
-
-        embed = make_embed(
-            "Upcoming Reminders",
-            _format_reminder_list(page_items, timezone_name=timezone_name),
-            colour=AxiomColor.PRIMARY,
+        view = ReminderListView(reminders=reminders, timezone_name=timezone_name, page=1)
+        await interaction.response.send_message(
+            embed=view._embed(),
+            view=view if view.total_pages > 1 else None,
+            ephemeral=True,
         )
-        total_pages = max(1, (len(reminders) + REMINDER_LIST_PAGE_SIZE - 1) // REMINDER_LIST_PAGE_SIZE)
-        footer = f"{len(reminders)} reminder{'s' if len(reminders) != 1 else ''} active"
-        if total_pages > 1:
-            footer = f"{footer} | Page {page}/{total_pages}"
-        embed.set_footer(text=footer)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("reminder list", interaction, metadata={"count": len(reminders)})
 
-    @reminder.command(name="remove", description="Remove one reminder by ID.")
-    @app_commands.describe(reminder_id="Reminder ID from /reminder list.")
-    @app_commands.rename(reminder_id="id")
+    @reminder.command(name="remove", description="Remove one reminder.")
+    @app_commands.describe(reminder_id="Start typing a reminder, then choose one from the suggestions.")
+    @app_commands.rename(reminder_id="reminder")
     async def reminder_remove(
         self,
         interaction: discord.Interaction,
@@ -584,9 +705,37 @@ class CommunityCog(commands.Cog, name="Community"):
             )
             return
         self._cancel_reminder_task(reminder_id)
-        embed = make_embed("Reminder Removed", removed["note"], status="success")
+        embed = make_embed(
+            "Reminder Removed",
+            f"**{removed['note']}**",
+            colour=AxiomColor.SUCCESS,
+            footer=REMINDER_FOOTER,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("reminder remove", interaction, metadata={"reminder_id": reminder_id})
+
+    @reminder_remove.autocomplete("reminder_id")
+    async def reminder_remove_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[int]]:
+        timezone_name = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
+        current_lower = current.lower().strip()
+        reminders = [_reminder_from_row(row) for row in db.list_reminders(interaction.user.id, limit=50)]
+        if current_lower:
+            reminders = [
+                reminder
+                for reminder in reminders
+                if current_lower in reminder.note.lower() or current_lower in str(reminder.id)
+            ]
+        return [
+            app_commands.Choice(
+                name=_reminder_choice_label(reminder, timezone_name),
+                value=reminder.id,
+            )
+            for reminder in reminders[:25]
+        ]
 
     @reminder.command(name="clear", description="Remove all your active reminders.")
     async def reminder_clear(self, interaction: discord.Interaction) -> None:
@@ -594,10 +743,13 @@ class CommunityCog(commands.Cog, name="Community"):
         removed_count = db.clear_reminders(interaction.user.id)
         for reminder in reminders:
             self._cancel_reminder_task(reminder.id)
-        await interaction.response.send_message(
-            success_text(f"Removed {removed_count} reminder{'s' if removed_count != 1 else ''}."),
-            ephemeral=True,
+        embed = make_embed(
+            "Reminders Cleared",
+            f"Removed {removed_count} reminder{'s' if removed_count != 1 else ''}.",
+            colour=AxiomColor.SUCCESS,
+            footer=REMINDER_FOOTER,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("reminder clear", interaction, metadata={"count": removed_count})
 
     @timezone.command(name="set", description="Set your preferred reminder timezone.")
@@ -617,28 +769,37 @@ class CommunityCog(commands.Cog, name="Community"):
             )
             return
         db.set_user_timezone(interaction.user.id, normalized)
-        await interaction.response.send_message(
-            success_text(f"Timezone: {timezone_view(normalized)}"),
-            ephemeral=True,
+        embed = make_embed(
+            "Timezone Set",
+            timezone_view(normalized),
+            colour=AxiomColor.SUCCESS,
+            footer=REMINDER_FOOTER,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("timezone set", interaction, metadata={"timezone": normalized})
 
     @timezone.command(name="view", description="View your reminder timezone.")
     async def timezone_view_command(self, interaction: discord.Interaction) -> None:
         timezone_name = db.get_user_timezone(interaction.user.id) or DEFAULT_TIMEZONE
-        await interaction.response.send_message(
-            f"Timezone: {timezone_view(timezone_name)}",
-            ephemeral=True,
+        embed = make_embed(
+            "Timezone",
+            timezone_view(timezone_name),
+            colour=AxiomColor.PRIMARY,
+            footer=REMINDER_FOOTER,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("timezone view", interaction)
 
     @timezone.command(name="reset", description="Reset your reminder timezone to UTC.")
     async def timezone_reset(self, interaction: discord.Interaction) -> None:
         db.reset_user_timezone(interaction.user.id)
-        await interaction.response.send_message(
-            success_text("Timezone reset to UTC."),
-            ephemeral=True,
+        embed = make_embed(
+            "Timezone Reset",
+            timezone_view(DEFAULT_TIMEZONE),
+            colour=AxiomColor.SUCCESS,
+            footer=REMINDER_FOOTER,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success("timezone reset", interaction)
 
     @app_commands.command(name="remind", description="Set a lightweight reminder.")
@@ -686,9 +847,15 @@ class CommunityCog(commands.Cog, name="Community"):
         reminder = _reminder_from_row(row)
         self._schedule_reminder(reminder)
 
-        embed = make_embed("Reminder Set", format_confirmation(parsed), status="success")
-        embed.add_field(name="About", value=note, inline=False)
-        embed.add_field(name="ID", value=str(reminder.id), inline=True)
+        embed = _build_reminder_confirmation_embed(
+            note,
+            parsed.due_at,
+            user_timezone=parsed.user_timezone,
+            input_timezone=parsed.input_timezone,
+            input_timezone_label=parsed.input_timezone_label,
+            user_timezone_label=parsed.user_timezone_label,
+            used_explicit_timezone=parsed.used_explicit_timezone,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         _record_success(command_name, interaction, metadata={"reminder_id": reminder.id})
 
@@ -715,13 +882,7 @@ class CommunityCog(commands.Cog, name="Community"):
         await asyncio.sleep(delay)
         if db.get_reminder(reminder.id) is None:
             return
-        embed = make_embed("Reminder", reminder.note, status="watch")
-        due_at = datetime.fromtimestamp(reminder.due_at, UTC)
-        embed.add_field(
-            name="Scheduled",
-            value=format_due_label(due_at, reminder.timezone),
-            inline=True,
-        )
+        embed = _build_reminder_delivery_embed(reminder)
         user = self.bot.get_user(reminder.user_id) or await self.bot.fetch_user(reminder.user_id)
         channel = self.bot.get_channel(reminder.channel_id) if reminder.channel_id else None
         try:

@@ -52,7 +52,9 @@ _DAY_SHORT_NAMES = {name.lower(): index for index, name in enumerate(calendar.da
 class ReminderParseResult:
     due_at: datetime
     input_timezone: str
+    input_timezone_label: str
     user_timezone: str
+    user_timezone_label: str
     used_explicit_timezone: bool
     source: str
 
@@ -112,8 +114,9 @@ def parse_reminder_time(
 
     now_utc = (now or datetime.now(UTC)).astimezone(UTC)
     default_zone = normalize_timezone(user_timezone)
-    text, explicit_zone = _extract_timezone(source)
+    text, explicit_zone, explicit_label = _extract_timezone(source)
     input_zone = explicit_zone or default_zone
+    input_label = explicit_label or timezone_label(input_zone, now_utc)
     zone = _zoneinfo(input_zone)
     local_now = now_utc.astimezone(zone)
 
@@ -130,24 +133,34 @@ def parse_reminder_time(
     return ReminderParseResult(
         due_at=due_utc,
         input_timezone=input_zone,
+        input_timezone_label=input_label,
         user_timezone=default_zone,
+        user_timezone_label=timezone_label(default_zone, due_utc),
         used_explicit_timezone=explicit_zone is not None,
         source=source,
     )
 
 
 def format_confirmation(result: ReminderParseResult) -> str:
-    input_line = format_clock(result.due_at, result.input_timezone)
+    input_line = format_clock(
+        result.due_at,
+        result.input_timezone,
+        label=result.input_timezone_label,
+    )
     if result.used_explicit_timezone and result.input_timezone != result.user_timezone:
-        user_line = format_clock(result.due_at, result.user_timezone)
-        return f"{input_line}\n-> {user_line}\n\nI'll remind you then."
+        user_line = format_clock(
+            result.due_at,
+            result.user_timezone,
+            label=result.user_timezone_label,
+        )
+        return f"Time entered: {input_line}\nScheduled for you: {user_line}"
     friendly = format_due_label(result.due_at, result.user_timezone, include_time=True)
     return f"I'll remind you {friendly}."
 
 
-def format_clock(due_at: datetime, zone_name: str) -> str:
+def format_clock(due_at: datetime, zone_name: str, *, label: str | None = None) -> str:
     local = due_at.astimezone(_zoneinfo(zone_name))
-    return f"{_format_time(local)} {timezone_label(zone_name, due_at)}"
+    return f"{_format_time(local)} {label or timezone_label(zone_name, due_at)}"
 
 
 def format_due_label(
@@ -180,6 +193,31 @@ def format_due_label(
     return f"{day} \u2022 {_format_time(local_due)}"
 
 
+def format_absolute_due(
+    due_at: datetime | int,
+    zone_name: str,
+    *,
+    now: datetime | None = None,
+    include_timezone: bool = True,
+) -> str:
+    due_utc = _coerce_utc(due_at)
+    label = format_due_label(due_utc, zone_name, now=now)
+    if include_timezone:
+        label = f"{label} {timezone_label(zone_name, due_utc)}"
+    return label
+
+
+def format_compact_schedule(
+    due_at: datetime | int,
+    zone_name: str,
+    *,
+    now: datetime | None = None,
+) -> str:
+    absolute = format_absolute_due(due_at, zone_name, now=now)
+    relative = format_relative_due(due_at, now=now)
+    return f"{absolute}\n{relative}"
+
+
 def format_relative_due(
     due_at: datetime | int,
     *,
@@ -205,19 +243,19 @@ def clean_reminder_note(value: str) -> str:
     return cleaned[:300].rstrip()
 
 
-def _extract_timezone(value: str) -> tuple[str, str | None]:
+def _extract_timezone(value: str) -> tuple[str, str | None, str | None]:
     parts = value.rsplit(" ", 1)
     if len(parts) != 2:
-        return value, None
+        return value, None, None
     head, tail = parts[0].strip(), parts[1].strip()
     if not tail:
-        return value, None
+        return value, None, None
     try:
-        return head, normalize_timezone(tail)
+        return head, normalize_timezone(tail), tail.upper() if tail.upper() in _TIMEZONE_ALIASES else None
     except ReminderParseError:
         if "/" in tail or tail.upper() in _TIMEZONE_ALIASES:
             raise
-        return value, None
+        return value, None, None
 
 
 def _parse_relative(value: str, local_now: datetime) -> datetime | None:

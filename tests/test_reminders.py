@@ -10,7 +10,8 @@ from core.database import Database  # noqa: E402
 from cogs.community import _format_reminder_list, _reminder_from_row  # noqa: E402
 from services.reminders import (  # noqa: E402
     ReminderParseError,
-    format_confirmation,
+    format_absolute_due,
+    format_compact_schedule,
     normalize_timezone,
     parse_reminder_time,
     timezone_view,
@@ -48,8 +49,17 @@ class ReminderParserTest(unittest.TestCase):
 
         converted = parse_reminder_time("at 10pm PST", now=NOW, user_timezone="Asia/Kolkata")
         self.assertEqual(converted.due_at, datetime(2026, 6, 3, 5, 0, tzinfo=UTC))
-        self.assertIn("10:00 PM PST", format_confirmation(converted))
-        self.assertIn("10:30 AM IST", format_confirmation(converted))
+        self.assertEqual(converted.input_timezone_label, "PST")
+        self.assertEqual(converted.user_timezone_label, "IST")
+
+    def test_absolute_and_relative_display_are_combined(self) -> None:
+        due_at = datetime(2026, 6, 3, 17, 0, tzinfo=UTC)
+
+        self.assertEqual(format_absolute_due(due_at, "UTC", now=NOW), "Tomorrow \u2022 5:00 PM UTC")
+        self.assertEqual(
+            format_compact_schedule(due_at, "UTC", now=NOW),
+            "Tomorrow \u2022 5:00 PM UTC\nIn 1 day",
+        )
 
     def test_timezone_preferences_drive_default_resolution(self) -> None:
         parsed = parse_reminder_time("tomorrow 8am", now=NOW, user_timezone="Asia/Kolkata")
@@ -100,8 +110,9 @@ class ReminderStorageAndListTest(unittest.TestCase):
         reminders = [_reminder_from_row(row) for row in self.db.list_reminders(1)]
         self.assertEqual([reminder.id for reminder in reminders], [earlier["id"], later["id"]])
         rendered = _format_reminder_list(reminders, timezone_name="UTC", now=NOW)
-        self.assertIn(f"ID {earlier['id']}", rendered)
+        self.assertNotIn(f"ID {earlier['id']}", rendered)
         self.assertIn("Submit assignment", rendered)
+        self.assertIn("UTC\n", rendered)
 
         removed = self.db.delete_reminder(later["id"], 1)
         self.assertEqual(removed["note"], "Check deployment")
