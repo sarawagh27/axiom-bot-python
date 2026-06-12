@@ -147,7 +147,19 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
             interval=interval,
         )
 
-        view = PingbombView(session=session, invoker_id=user_id)
+        from core.database import db
+
+        alert = db.create_pingbomb_alert(
+            guild_id=guild_id,
+            channel_id=interaction.channel_id,
+            created_by_user_id=user_id,
+            target_id=target.id,
+            count=count,
+            interval=interval,
+            anonymous=anonymous,
+        )
+
+        view = PingbombView(session=session, invoker_id=user_id, alert_id=alert["id"])
         embed = make_embed(
             "Ping Session Started",
             "A controlled session is now running.",
@@ -156,13 +168,14 @@ class PingbombCog(commands.Cog, name="Pingbomb"):
         )
         embed.add_field(name="Target", value=target.mention, inline=True)
         embed.add_field(name="Cadence", value=f"{count} ping(s), {interval}s apart", inline=True)
+        PingbombView.apply_acknowledgement_field(embed, db.get_pingbomb_ack_summary(alert["id"]))
         embed.add_field(name="Controls", value="Use the buttons below to pause or stop.", inline=False)
         embed.set_footer(text="Axiom Operations | Anonymous session" if anonymous else f"Axiom Operations | Started by {interaction.user.display_name}")
         await interaction.response.send_message(embed=embed, view=view)
+        message = await interaction.original_response()
+        db.set_pingbomb_alert_message(alert["id"], message.id)
 
         await self._engine.launch(session, cooldown_override=guild_cfg.cooldown_seconds, anonymous=anonymous)
-
-        from core.database import db
 
         db.record_usage(guild_id, user_id, "pingbomb", target.id, count)
         log.info(

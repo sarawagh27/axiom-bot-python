@@ -28,10 +28,11 @@ class PingbombView(discord.ui.View):
         User who started the session (only they and admins can control it).
     """
 
-    def __init__(self, session: Session, invoker_id: int) -> None:
+    def __init__(self, session: Session, invoker_id: int, alert_id: int) -> None:
         super().__init__(timeout=600)  # 10-minute button TTL
         self._session = session
         self._invoker_id = invoker_id
+        self._alert_id = alert_id
         self._update_button_states()
 
     # ------------------------------------------------------------------
@@ -39,6 +40,10 @@ class PingbombView(discord.ui.View):
     # ------------------------------------------------------------------
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        custom_id = (interaction.data or {}).get("custom_id")
+        if custom_id == "pb_ack":
+            return True
+
         is_invoker = interaction.user.id == self._invoker_id
         is_admin = interaction.user.guild_permissions.administrator
 
@@ -49,6 +54,30 @@ class PingbombView(discord.ui.View):
             )
             return False
         return True
+
+    @discord.ui.button(label="Acknowledge", style=discord.ButtonStyle.success, custom_id="pb_ack")
+    async def acknowledge_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        from core.database import db
+
+        result = db.acknowledge_pingbomb_alert(self._alert_id, interaction.user.id)
+        if result == "not_recipient":
+            await interaction.response.send_message(
+                "You are not listed as a recipient for this alert.",
+                ephemeral=True,
+            )
+            return
+        if result == "already_acknowledged":
+            await interaction.response.send_message("You already acknowledged this alert.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("Acknowledged.", ephemeral=True)
+        summary = db.get_pingbomb_ack_summary(self._alert_id)
+        if interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            self.apply_acknowledgement_field(embed, summary)
+            await interaction.message.edit(embed=embed, view=self)
 
     # ------------------------------------------------------------------
     # Buttons
@@ -78,6 +107,7 @@ class PingbombView(discord.ui.View):
 
         self._update_button_states()
         embed = self._build_status_embed(session, "⏸ Paused")
+        self._apply_current_acknowledgement_field(embed)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="▶ Resume", style=discord.ButtonStyle.success, custom_id="pb_resume")
@@ -104,6 +134,7 @@ class PingbombView(discord.ui.View):
 
         self._update_button_states()
         embed = self._build_status_embed(session, "▶ Running")
+        self._apply_current_acknowledgement_field(embed)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="⏹ Stop", style=discord.ButtonStyle.danger, custom_id="pb_stop")
@@ -134,8 +165,8 @@ class PingbombView(discord.ui.View):
 
         self._disable_all()
         embed = self._build_status_embed(session, "⏹ Stopped")
+        self._apply_current_acknowledgement_field(embed)
         await interaction.response.edit_message(embed=embed, view=self)
-        self.stop()
 
     # ------------------------------------------------------------------
     # Timeout / cleanup
@@ -154,7 +185,7 @@ class PingbombView(discord.ui.View):
     def _disable_all(self) -> None:
         for item in self.children:
             if isinstance(item, discord.ui.Button):
-                item.disabled = True
+                item.disabled = item.custom_id != "pb_ack"
 
     def _update_button_states(self) -> None:
         # Always use the live session state from session_manager
@@ -164,6 +195,9 @@ class PingbombView(discord.ui.View):
             if not isinstance(item, discord.ui.Button):
                 continue
             cid = item.custom_id
+            if cid == "pb_ack":
+                item.disabled = False
+                continue
             if cid == "pb_pause":
                 # Enable pause when RUNNING or PENDING (engine may not have started yet)
                 item.disabled = state not in (SessionState.RUNNING, SessionState.PENDING)
@@ -171,6 +205,11 @@ class PingbombView(discord.ui.View):
                 item.disabled = state != SessionState.PAUSED
             elif cid == "pb_stop":
                 item.disabled = state in (SessionState.STOPPED, SessionState.COMPLETED)
+
+    def _apply_current_acknowledgement_field(self, embed: discord.Embed) -> None:
+        from core.database import db
+
+        self.apply_acknowledgement_field(embed, db.get_pingbomb_ack_summary(self._alert_id))
 
     @staticmethod
     def _build_status_embed(session: Session, status: str) -> discord.Embed:
@@ -191,3 +230,20 @@ class PingbombView(discord.ui.View):
         )
         embed.add_field(name="Interval", value=f"{session.interval}s", inline=True)
         return embed
+
+    @staticmethod
+    def acknowledgement_text(summary: dict[str, int]) -> str:
+        return f"**{summary['acknowledged']} / {summary['total_recipients']}** acknowledged"
+
+    @classmethod
+    def apply_acknowledgement_field(
+        cls,
+        embed: discord.Embed,
+        summary: dict[str, int],
+    ) -> None:
+        value = cls.acknowledgement_text(summary)
+        for index, field in enumerate(embed.fields):
+            if field.name == "Acknowledgements":
+                embed.set_field_at(index, name="Acknowledgements", value=value, inline=True)
+                return
+        embed.add_field(name="Acknowledgements", value=value, inline=True)

@@ -178,6 +178,41 @@ class Database:
                 timezone   TEXT    NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
+
+            CREATE TABLE IF NOT EXISTS pingbomb_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER,
+                created_by_user_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                count INTEGER NOT NULL,
+                interval REAL NOT NULL,
+                anonymous INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at REAL NOT NULL DEFAULT (unixepoch()),
+                completed_at REAL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pingbomb_alerts_guild_created
+                ON pingbomb_alerts (guild_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS pingbomb_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                acknowledged_at REAL,
+                created_at REAL NOT NULL DEFAULT (unixepoch()),
+                UNIQUE(alert_id, user_id),
+                FOREIGN KEY (alert_id) REFERENCES pingbomb_alerts (id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pingbomb_recipients_alert
+                ON pingbomb_recipients (alert_id);
+
+            CREATE INDEX IF NOT EXISTS idx_pingbomb_recipients_user
+                ON pingbomb_recipients (user_id, status);
         """)
         self._ensure_operational_events_schema()
         self._conn.commit()
@@ -317,6 +352,7 @@ class Database:
             "unique_users": row["unique_users"] or 0,
             "top_users": [(r["user_id"], r["total"]) for r in top_users],
             "top_commands": [(r["command"], r["uses"]) for r in top_commands],
+            "acknowledgements": self.get_pingbomb_ack_metrics(guild_id),
         }
 
     def get_user_stats(self, guild_id: int, user_id: int) -> dict:
@@ -333,6 +369,137 @@ class Database:
             "total_uses": row["total_uses"] or 0,
             "total_pings": row["total_pings"] or 0,
             "last_used": row["last_used"],
+            "acknowledgements": self.get_pingbomb_user_ack_metrics(guild_id, user_id),
+        }
+
+    # ------------------------------------------------------------------
+    # Pingbomb acknowledgements
+    # ------------------------------------------------------------------
+
+    def create_pingbomb_alert(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        created_by_user_id: int,
+        target_id: int,
+        count: int,
+        interval: float,
+        anonymous: bool = False,
+    ) -> dict[str, Any]:
+        row = self._conn.execute("""
+            INSERT INTO pingbomb_alerts (
+                guild_id, channel_id, created_by_user_id, target_id,
+                count, interval, anonymous
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            RETURNING id, guild_id, channel_id, message_id, created_by_user_id,
+                      target_id, count, interval, anonymous, status, created_at,
+                      completed_at
+        """, (
+            guild_id,
+            channel_id,
+            created_by_user_id,
+            target_id,
+            count,
+            interval,
+            int(anonymous),
+        )).fetchone()
+        alert = dict(row)
+        self.add_pingbomb_recipient(alert["id"], target_id)
+        self._conn.commit()
+        return alert
+
+    def add_pingbomb_recipient(self, alert_id: int, user_id: int) -> None:
+        self._conn.execute("""
+            INSERT OR IGNORE INTO pingbomb_recipients (alert_id, user_id)
+            VALUES (?, ?)
+        """, (alert_id, user_id))
+
+    def set_pingbomb_alert_message(self, alert_id: int, message_id: int) -> None:
+        self._conn.execute(
+            "UPDATE pingbomb_alerts SET message_id = ? WHERE id = ?",
+            (message_id, alert_id),
+        )
+        self._conn.commit()
+
+    def acknowledge_pingbomb_alert(
+        self,
+        alert_id: int,
+        user_id: int,
+        *,
+        acknowledged_at: Optional[float] = None,
+    ) -> str:
+        recipient = self._conn.execute("""
+            SELECT status
+            FROM pingbomb_recipients
+            WHERE alert_id = ? AND user_id = ?
+        """, (alert_id, user_id)).fetchone()
+        if recipient is None:
+            return "not_recipient"
+        if recipient["status"] == "acknowledged":
+            return "already_acknowledged"
+
+        self._conn.execute("""
+            UPDATE pingbomb_recipients
+            SET status = 'acknowledged', acknowledged_at = ?
+            WHERE alert_id = ? AND user_id = ?
+        """, (acknowledged_at or time.time(), alert_id, user_id))
+        self._conn.commit()
+        return "acknowledged"
+
+    def get_pingbomb_ack_summary(self, alert_id: int) -> dict[str, int]:
+        row = self._conn.execute("""
+            SELECT
+                COUNT(*) as total_recipients,
+                SUM(CASE WHEN status = 'acknowledged' THEN 1 ELSE 0 END) as acknowledged
+            FROM pingbomb_recipients
+            WHERE alert_id = ?
+        """, (alert_id,)).fetchone()
+        total = row["total_recipients"] or 0
+        acknowledged = row["acknowledged"] or 0
+        return {
+            "total_recipients": total,
+            "acknowledged": acknowledged,
+            "pending": max(0, total - acknowledged),
+        }
+
+    def get_pingbomb_ack_metrics(self, guild_id: int) -> dict[str, Any]:
+        row = self._conn.execute("""
+            SELECT
+                COUNT(DISTINCT a.id) as total_alerts,
+                COUNT(r.id) as total_recipients,
+                SUM(CASE WHEN r.status = 'acknowledged' THEN 1 ELSE 0 END) as acknowledged
+            FROM pingbomb_alerts a
+            LEFT JOIN pingbomb_recipients r ON r.alert_id = a.id
+            WHERE a.guild_id = ?
+        """, (guild_id,)).fetchone()
+        total_recipients = row["total_recipients"] or 0
+        acknowledged = row["acknowledged"] or 0
+        return {
+            "total_alerts": row["total_alerts"] or 0,
+            "total_recipients": total_recipients,
+            "acknowledged": acknowledged,
+            "pending": max(0, total_recipients - acknowledged),
+            "ack_rate": acknowledged / total_recipients if total_recipients else 0,
+        }
+
+    def get_pingbomb_user_ack_metrics(self, guild_id: int, user_id: int) -> dict[str, Any]:
+        row = self._conn.execute("""
+            SELECT
+                COUNT(r.id) as total_alerts,
+                SUM(CASE WHEN r.status = 'acknowledged' THEN 1 ELSE 0 END) as acknowledged
+            FROM pingbomb_recipients r
+            JOIN pingbomb_alerts a ON a.id = r.alert_id
+            WHERE a.guild_id = ? AND r.user_id = ?
+        """, (guild_id, user_id)).fetchone()
+        total_alerts = row["total_alerts"] or 0
+        acknowledged = row["acknowledged"] or 0
+        return {
+            "total_alerts": total_alerts,
+            "acknowledged": acknowledged,
+            "pending": max(0, total_alerts - acknowledged),
+            "ack_rate": acknowledged / total_alerts if total_alerts else 0,
         }
 
     # ------------------------------------------------------------------

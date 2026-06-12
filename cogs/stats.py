@@ -13,6 +13,10 @@ from util.discord_ui import AXIOM_OPS_FOOTER, make_embed
 log = logging.getLogger("axiom.cogs.stats")
 
 
+def _format_ack_rate(value: float) -> str:
+    return f"{value * 100:.0f}%"
+
+
 class StatsCog(commands.Cog, name="Stats"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -49,6 +53,16 @@ class StatsCog(commands.Cog, name="Stats"):
                 value=f"<t:{int(data['last_used'])}:R>" if data["last_used"] else "No recorded activity.",
                 inline=True,
             )
+            acknowledgements = data["acknowledgements"]
+            if acknowledgements["total_alerts"]:
+                embed.add_field(
+                    name="Alert Acknowledgements",
+                    value=(
+                        f"**{acknowledgements['acknowledged']} / {acknowledgements['total_alerts']}** "
+                        f"acknowledged ({_format_ack_rate(acknowledgements['ack_rate'])})"
+                    ),
+                    inline=False,
+                )
         else:
             data = db.get_guild_stats(interaction.guild_id)
             embed = make_embed(
@@ -59,6 +73,16 @@ class StatsCog(commands.Cog, name="Stats"):
             embed.add_field(name="Commands", value=f"**{data['total_uses']}**", inline=True)
             embed.add_field(name="Pings", value=f"**{data['total_pings']}**", inline=True)
             embed.add_field(name="Unique Users", value=f"**{data['unique_users']}**", inline=True)
+            acknowledgements = data["acknowledgements"]
+            if acknowledgements["total_recipients"]:
+                embed.add_field(
+                    name="Alert Acknowledgements",
+                    value=(
+                        f"**{acknowledgements['acknowledged']} / {acknowledgements['total_recipients']}** "
+                        f"acknowledged ({_format_ack_rate(acknowledgements['ack_rate'])})"
+                    ),
+                    inline=False,
+                )
 
             if data["top_users"]:
                 top_users = "\n".join(
